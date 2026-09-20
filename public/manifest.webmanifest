@@ -1,0 +1,17 @@
+{
+  "name": "Relight — AI Product Photo Cleaner",
+  "short_name": "Relight",
+  "description": "Turn messy phone photos of your products into clean, professional banners with realistic shadows.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf9f7",
+  "theme_color": "#faf9f7",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
