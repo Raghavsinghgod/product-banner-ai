@@ -59,22 +59,6 @@ export function loadMattingModel(): Promise<BackgroundRemovalPipeline | null> {
   return pipePromise;
 }
 
-/** Human-readable model state for the UI. */
-export type ModelState = "unloaded" | "loading" | "ready" | "failed";
-
-let stateOverride: ModelState = "unloaded";
-
-/** True once the model has loaded (or permanently failed). */
-export function modelStatus(): ModelState {
-  if (!pipePromise) return stateOverride === "failed" ? "failed" : "unloaded";
-  return stateOverride === "failed" ? "failed" : "loading";
-}
-
-// Track resolution so modelStatus() can report ready/failed.
-void Promise.resolve().then(async () => {
-  // no-op placeholder — actual state is tracked by callers awaiting loadMattingModel
-});
-
 /**
  * Produce a high-quality alpha matte for an image bitmap using BiRefNet.
  * The returned alpha is already resized to the input dimensions.
