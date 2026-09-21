@@ -170,13 +170,24 @@ export default function Studio() {
   // ---- segmentation: AI matting first (BiRefNet, MIT), custom engine as
   // refinement + fallback. The AI mask handles complex scenes (product close
   // in color to the background, clutter) that defeat color models.
-  const runSegment = async (rgba: Uint8ClampedArray, w: number, h: number, tol: number, bitmap?: ImageBitmap) => {
-    setAiState("loading");
+  const runSegment = async (
+    rgba: Uint8ClampedArray,
+    w: number,
+    h: number,
+    tol: number,
+    bitmap?: ImageBitmap,
+    customOnly?: boolean,
+  ) => {
+    if (customOnly) {
+      setAiState("failed");
+    } else {
+      setAiState("loading");
+    }
     try {
       let cutout: Cutout | null = null;
 
       // 1) AI matte (needs the bitmap at the same size as rgba)
-      if (bitmap) {
+      if (bitmap && !customOnly) {
         try {
           const matte = await aiMatte(bitmap);
           if (matte) {
@@ -366,11 +377,16 @@ export default function Studio() {
     setBackdrop("studio");
   };
 
-  const retrySegmentation = () => {
+  // Manual retry: always use the custom engine (the user is tuning the
+  // tolerance slider — the AI matte ignores tolerance by design).
+  const retrySegmentation = (opts?: { customOnly?: boolean }) => {
     const src = sourceRef.current;
     if (!src) return;
     setStage("processing");
-    setTimeout(() => void runSegment(src.data.data, src.width, src.height, tolerance), 30);
+    setTimeout(
+      () => void runSegment(src.data.data, src.width, src.height, tolerance, undefined, opts?.customOnly),
+      30,
+    );
   };
 
   // Pick one of the five output styles; the style drives backdrop + shadow
@@ -931,7 +947,8 @@ export default function Studio() {
                   const src = sourceRef.current;
                   if (src) {
                     setStage("processing");
-                    setTimeout(() => void runSegment(src.data.data, src.width, src.height, v), 30);
+                    // tolerance only affects the custom engine — run custom-only
+                    setTimeout(() => void runSegment(src.data.data, src.width, src.height, v, undefined, true), 30);
                   }
                 }}
               />
@@ -1045,7 +1062,7 @@ export default function Studio() {
                   </>
                 )}
                 <div className="mt-2 flex gap-2">
-                  <Button variant="outline" size="sm" onClick={retrySegmentation}>
+                  <Button variant="outline" size="sm" onClick={() => retrySegmentation()}>
                     <RotateCcw className="size-4" />
                     Retry
                   </Button>

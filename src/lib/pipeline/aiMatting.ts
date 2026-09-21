@@ -128,11 +128,11 @@ export async function aiMatte(
  * Combine an AI matte with the source image into a Cutout, applying the same
  * refinement quality-bars as the custom engine (feather via a small blur on
  * the matte edge, plus confidence reporting).
+ * Accepts a plain { data, width, height } so it runs in workers and tests.
  */
 export function matteToCutout(
-  source: ImageData,
+  source: { data: Uint8ClampedArray; width: number; height: number },
   matte: MattingResult,
-  _unused?: never,
 ): Cutout {
   const { width: w, height: h } = source;
   const n = w * h;
