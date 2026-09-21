@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Logo } from "@/components/Logo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAuth } from "@/hooks/use-auth";
 import {
   Crop,
@@ -56,15 +57,18 @@ export default function Dashboard() {
               </h1>
             </div>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="gap-2 self-start"
-            onClick={handleSignOut}
-          >
-            <LogOut className="size-4" />
-            Sign out
-          </Button>
+          <div className="flex items-center gap-2 self-start">
+            <ThemeToggle />
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-2"
+              onClick={handleSignOut}
+            >
+              <LogOut className="size-4" />
+              Sign out
+            </Button>
+          </div>
         </header>
 
         <Card className="overflow-hidden border-border/70 p-0">

@@ -1,5 +1,6 @@
 import { Logo } from "@/components/Logo";
 import { BeforeAfterSlider } from "@/components/BeforeAfterSlider";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DEMO_PLACE, getDemoBefore, renderDemoAfter } from "@/lib/pipeline/demo";
@@ -89,6 +90,7 @@ function Nav() {
           <a href="#sellers" className="transition-colors hover:text-foreground">For sellers</a>
         </nav>
         <div className="flex items-center gap-2.5">
+          <ThemeToggle />
           <Button variant="ghost" size="sm" asChild className="hidden sm:inline-flex">
             <Link to="/studio">Open studio</Link>
           </Button>

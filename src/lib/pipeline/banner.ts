@@ -3,7 +3,15 @@
 import type { Cutout } from "./segment";
 import { renderShadow, paintShadow, type ShadowOptions } from "./shadow";
 
-export type BackdropId = "studio" | "warm" | "mint" | "blush" | "sky" | "charcoal";
+export type BackdropId =
+  | "studio"
+  | "warm"
+  | "mint"
+  | "blush"
+  | "sky"
+  | "paper"
+  | "walnut"
+  | "charcoal";
 export type RatioId = "4:5" | "1:1" | "16:9";
 
 export const BACKDROPS: Array<{
@@ -19,6 +27,8 @@ export const BACKDROPS: Array<{
   { id: "mint", label: "Mint", from: "#e8f2ee", to: "#d2e5dc", swatch: "#dcebe4" },
   { id: "blush", label: "Blush", from: "#f7edeb", to: "#ecd9d6", swatch: "#f1e3e0" },
   { id: "sky", label: "Sky", from: "#eaf0f6", to: "#d4e1ee", swatch: "#dfe9f2" },
+  { id: "paper", label: "Paper", from: "#fbfaf7", to: "#f2f0ea", swatch: "#f6f5f0" },
+  { id: "walnut", label: "Walnut", from: "#6b4a34", to: "#452e20", swatch: "#5a3e2b", dark: true },
   { id: "charcoal", label: "Charcoal", from: "#33373b", to: "#1e2124", swatch: "#282c30", dark: true },
 ];
 

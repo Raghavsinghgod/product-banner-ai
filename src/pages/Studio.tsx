@@ -1,5 +1,6 @@
 import { BeforeAfterSlider } from "@/components/BeforeAfterSlider";
 import { Logo } from "@/components/Logo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,7 +9,9 @@ import { Slider } from "@/components/ui/slider";
 import {
   autoPlacement,
   BACKDROPS,
+  drawBackdrop,
   drawBanner,
+  drawProduct,
   exportBanner,
   getRatio,
   RATIOS,
@@ -17,8 +20,17 @@ import {
   type RatioId,
 } from "@/lib/pipeline/banner";
 import { getDemoBefore } from "@/lib/pipeline/demo";
+import { paintShadow, renderShadow } from "@/lib/pipeline/shadow";
 import { segment, type Cutout } from "@/lib/pipeline/segment";
 import { DEFAULT_SHADOW, type ShadowOptions } from "@/lib/pipeline/shadow";
+import {
+  analyzeCutout,
+  getStyle,
+  OUTPUT_STYLES,
+  recommendStyles,
+  type OutputStyleId,
+  type StyleAnalysis,
+} from "@/lib/pipeline/styles";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -58,6 +70,10 @@ export default function Studio() {
   const [backdrop, setBackdrop] = useState<BackdropId>("studio");
   const [ratio, setRatio] = useState<RatioId>("4:5");
   const [shadow, setShadow] = useState<ShadowOptions>(DEFAULT_SHADOW);
+  const [style, setStyle] = useState<OutputStyleId>("white-shadow");
+  const [shadowsOn, setShadowsOn] = useState(true);
+  const [analysis, setAnalysis] = useState<StyleAnalysis | null>(null);
+  const [recommended, setRecommended] = useState<OutputStyleId[]>([]);
   const [size, setSize] = useState(100); // percent of auto scale
   const [height, setHeight] = useState(72); // baseline percent of canvas height
   const [tolerance, setTolerance] = useState(26);
@@ -109,6 +125,18 @@ export default function Studio() {
       setEdgeWarning(cutout.touchedEdges.size > 0);
       const coversAll = box.w > w * 0.97 && box.h > h * 0.97;
       setFitWarning(coversAll);
+      // Style analysis + recommendation straight from the cutout pixels,
+      // then auto-apply the best-match output style.
+      try {
+        const a = analyzeCutout(cutout);
+        setAnalysis(a);
+        const rec = recommendStyles(a);
+        setRecommended(rec);
+        if (rec[0]) applyStyle(rec[0]);
+      } catch {
+        setAnalysis(null);
+        setRecommended([]);
+      }
       setSize(100);
       setHeight(72);
       setCutoutTick((t) => t + 1);
@@ -167,7 +195,13 @@ export default function Studio() {
           y: (height / 100) * r.h,
           scale: base.scale * (size / 100),
         };
-        drawBanner(ctx, cutout, place, { backdrop, ratio, shadow });
+        ctx.clearRect(0, 0, r.w, r.h);
+        drawBackdrop(ctx, r.w, r.h, backdrop);
+        if (shadowsOn) {
+          const mask = renderShadow(cutout, place, r.w, r.h, shadow);
+          paintShadow(ctx, mask, r.w, r.h);
+        }
+        drawProduct(ctx, cutout, place);
         setAfterUrl(out.toDataURL("image/png"));
       });
     }, 40);
@@ -175,7 +209,7 @@ export default function Studio() {
       clearTimeout(t);
       cancelAnimationFrame(raf);
     };
-  }, [stage, cutoutTick, backdrop, ratio, shadow, size, height]);
+  }, [stage, cutoutTick, backdrop, ratio, shadow, shadowsOn, size, height]);
 
   const reset = () => {
     cutoutRef.current = null;
@@ -191,6 +225,11 @@ export default function Studio() {
     setShadow(DEFAULT_SHADOW);
     setSize(100);
     setHeight(72);
+    setAnalysis(null);
+    setRecommended([]);
+    setStyle("white-shadow");
+    setShadowsOn(true);
+    setBackdrop("studio");
   };
 
   const retrySegmentation = () => {
@@ -203,6 +242,16 @@ export default function Studio() {
   const handleSignOut = async () => {
     await signOut();
     navigate("/");
+  };
+
+  // Pick one of the five output styles; the style drives backdrop + shadow
+  // defaults, but everything stays tweakable afterwards.
+  const applyStyle = (id: OutputStyleId) => {
+    const def = getStyle(id);
+    setStyle(id);
+    setBackdrop(def.backdrop);
+    setShadowsOn(def.shadows);
+    if (def.shadows) setShadow({ ...def.shadow });
   };
 
   const activePreset = SHADOW_PRESETS.find(
@@ -227,6 +276,7 @@ export default function Studio() {
                 {fileName}
               </span>
             )}
+            <ThemeToggle />
             <Button variant="outline" size="sm" onClick={reset}>
               <RotateCcw className="size-4" />
               New photo
@@ -308,12 +358,76 @@ export default function Studio() {
               </Button>
             </Card>
 
+            {/* output styles */}
+            <Card className={cn("p-5", stage !== "ready" && "pointer-events-none opacity-50")}>
+              <div className="mb-3 flex items-center gap-2">
+                <Sparkles className="size-4 text-primary" />
+                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                  2 · Output style
+                </h2>
+              </div>
+              <div className="grid gap-2">
+                {OUTPUT_STYLES.map((s) => {
+                  const rank = recommended.indexOf(s.id);
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => applyStyle(s.id)}
+                      className={cn(
+                        "group flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                        style === s.id
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:border-primary/40 hover:bg-muted/50",
+                      )}
+                    >
+                      <span
+                        className="size-8 shrink-0 rounded-lg ring-1 ring-black/10"
+                        style={{
+                          background:
+                            s.id === "pure-white"
+                              ? "#fff"
+                              : s.id === "white-shadow"
+                                ? "linear-gradient(180deg,#fff 55%,#ececec)"
+                                : s.id === "premium-desk"
+                                  ? "linear-gradient(180deg,#6b4a34,#452e20)"
+                                  : s.id === "studio"
+                                    ? "linear-gradient(180deg,#f7f6f3,#e9e6df)"
+                                    : "linear-gradient(180deg,#33373b,#1e2124)",
+                        }}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5 text-sm font-medium">
+                          {s.label}
+                          {rank === 0 && stage === "ready" && (
+                            <Badge
+                              variant="secondary"
+                              className="h-4 rounded-full px-1.5 text-[10px]"
+                            >
+                              Best match
+                            </Badge>
+                          )}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                          {s.blurb}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {!shadowsOn && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Shadows are off for this style — flip the switch below to add them.
+                </p>
+              )}
+            </Card>
+
             {/* backdrop + ratio */}
             <Card className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")}>
               <div className="mb-3 flex items-center gap-2">
                 <Wand2 className="size-4 text-primary" />
                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  2 · Backdrop &amp; size
+                  3 · Backdrop &amp; size
                 </h2>
               </div>
               <div className="grid grid-cols-6 gap-2">
@@ -356,13 +470,32 @@ export default function Studio() {
             </Card>
 
             {/* shadows */}
-            <Card className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")}>
+            <Card className={cn("p-5", (stage !== "ready" || !shadowsOn) && "opacity-50 pointer-events-none")}>
               <div className="mb-3 flex items-center gap-2">
                 <Wand2 className="size-4 text-primary" />
                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  3 · Shadow engine
+                  4 · Shadow engine
                 </h2>
               </div>
+              <button
+                onClick={() => setShadowsOn(!shadowsOn)}
+                className="mb-4 flex w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                <span className="text-muted-foreground">Shadows</span>
+                <span
+                  className={cn(
+                    "relative h-5 w-9 rounded-full transition-colors",
+                    shadowsOn ? "bg-primary" : "bg-muted",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "absolute top-0.5 size-4 rounded-full bg-white shadow transition-all",
+                      shadowsOn ? "left-[18px]" : "left-0.5",
+                    )}
+                  />
+                </span>
+              </button>
               <div className="grid grid-cols-2 gap-2">
                 {SHADOW_PRESETS.map((p) => (
                   <button
@@ -457,6 +590,56 @@ export default function Studio() {
                 Raise it if backdrop bits survive; lower it if the product gets eaten.
               </p>
             </Card>
+
+            {/* style analysis */}
+            {stage === "ready" && analysis && (
+              <Card className="p-5">
+                <div className="mb-3 flex items-center gap-2">
+                  <Sparkles className="size-4 text-primary" />
+                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                    Style analysis
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  {analysis.palette.map((hex, i) => (
+                    <span
+                      key={hex + i}
+                      title={hex}
+                      className="size-7 rounded-lg ring-1 ring-black/10"
+                      style={{ background: hex }}
+                    />
+                  ))}
+                </div>
+                <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Category</dt>
+                    <dd className="font-medium">{analysis.category}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Tone</dt>
+                    <dd className="font-medium">{Math.round(analysis.tone * 100)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Contrast</dt>
+                    <dd className="font-medium">{Math.round(analysis.contrast * 100)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Saturation</dt>
+                    <dd className="font-medium">{Math.round(analysis.saturation * 100)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Finish</dt>
+                    <dd className="font-medium">
+                      {analysis.glossy > 0.3 ? "Glossy" : analysis.glossy > 0.12 ? "Semi-gloss" : "Matte"}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Best style</dt>
+                    <dd className="font-medium">{getStyle(recommended[0] ?? style).label}</dd>
+                  </div>
+                </dl>
+              </Card>
+            )}
           </div>
 
           {/* -------------------------------------------------- preview */}
