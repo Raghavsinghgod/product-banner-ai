@@ -36,6 +36,7 @@ self.addEventListener("message", (e: MessageEvent) => {
         softPixels: cutout.softPixels,
         touchedEdges: Array.from(cutout.touchedEdges),
         box: cutout.box,
+        candidates: cutout.candidates,
         confidence: cutout.confidence,
       },
       [out],

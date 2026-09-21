@@ -252,6 +252,37 @@ describe("segmentation invariants", () => {
     expect(c.box.h).toBeLessThanOrEqual(64);
   });
 
+  test("candidates always present, best candidate matches primary bbox", () => {
+    const s = new SceneBuilder(120, 120, [228, 226, 220]).rect(35, 30, 85, 95, [190, 60, 60]);
+    const c = s.run();
+    expect(c.candidates.length).toBeGreaterThan(0);
+    const top = c.candidates[0];
+    expect(top.box.x).toBe(c.box.x);
+    expect(top.box.y).toBe(c.box.y);
+    expect(top.box.w).toBe(c.box.w);
+    expect(top.box.h).toBe(c.box.h);
+    expect(top.score).toBeGreaterThan(0);
+  });
+
+  test("cluttered scene: centrality beats a bigger off-center object", () => {
+    // A centered product and a LARGER clutter object pushed toward a corner.
+    // Old behavior (largest wins) would pick the clutter; ranking must not.
+    const s = new SceneBuilder(160, 160, [228, 226, 220])
+      .rect(50, 55, 100, 105, [190, 60, 60]) // product, 50x50, centered
+      .rect(105, 4, 155, 50, [60, 130, 90]); // clutter, 50x50, near top-right
+    const c = s.run();
+    expect(c.candidates.length).toBeGreaterThanOrEqual(2);
+    // primary is the centered product, not the bigger corner-hugging blob
+    const px = c.box.x + c.box.w / 2;
+    const py = c.box.y + c.box.h / 2;
+    expect(Math.abs(px - 80)).toBeLessThan(30);
+    expect(Math.abs(py - 80)).toBeLessThan(30);
+    expect(c.candidates[0].score).toBeGreaterThan(c.candidates[1].score);
+    // both objects survive in the alpha, but framing follows the product
+    expect(c.alpha[(29 * 160 + 125) * 4 + 3]).toBeGreaterThanOrEqual(128);
+    expect(c.alpha[(80 * 160 + 80) * 4 + 3]).toBeGreaterThanOrEqual(128);
+  });
+
   test("deterministic: same input, same output", () => {
     const s1 = new SceneBuilder(80, 80, [220, 218, 210]).rect(20, 20, 60, 60, [200, 80, 40]);
     const a = s1.run();

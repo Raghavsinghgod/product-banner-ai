@@ -36,6 +36,7 @@ import {
   AlertTriangle,
   Download,
   ImageUp,
+  MoveHorizontal,
   RotateCcw,
   Sparkles,
   Wand2,
@@ -73,11 +74,15 @@ export default function Studio() {
   const [size, setSize] = useState(100); // percent of auto scale
   const [height, setHeight] = useState(72); // baseline percent of canvas height
   const [tolerance, setTolerance] = useState(26);
+  /** Horizontal placement offset, -1..1 = fraction of half the free canvas width. */
+  const [offsetX, setOffsetX] = useState(0);
 
   const cutoutRef = useRef<Cutout | null>(null);
   const sourceRef = useRef<{ data: ImageData; width: number; height: number } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const previewBoxRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ startX: number; startOffset: number } | null>(null);
   const [cutoutTick, setCutoutTick] = useState(0);
 
   // ---- load a File -------------------------------------------------------
@@ -136,6 +141,7 @@ export default function Studio() {
       }
       setSize(100);
       setHeight(72);
+      setOffsetX(0);
       setCutoutTick((t) => t + 1);
       setStage(coversAll ? "error" : "ready");
     } catch (err) {
@@ -196,7 +202,7 @@ export default function Studio() {
         const ctx = out.getContext("2d")!;
         const base = autoPlacement(cutout, r.w, r.h);
         const place: Placement = {
-          x: base.x,
+          x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
           y: (height / 100) * r.h,
           scale: base.scale * (size / 100),
         };
@@ -208,6 +214,7 @@ export default function Studio() {
             ratio,
             size,
             height,
+            offsetX,
             shadow.direction,
             shadow.length,
             shadow.softness,
@@ -223,7 +230,19 @@ export default function Studio() {
           shadowCacheRef.current = null;
         }
         drawProduct(ctx, cutout, place);
-        setAfterUrl(out.toDataURL("image/png"));
+        // Preview: downscale + JPEG. PNG of the full 1080x1350 canvas is far
+        // too slow to run on every slider tick; the full-res PNG is re-rendered
+        // at export time instead.
+        const pw = 648;
+        const ph = Math.round((r.h / r.w) * pw);
+        const pcv = document.createElement("canvas");
+        pcv.width = pw;
+        pcv.height = ph;
+        const pctx = pcv.getContext("2d")!;
+        pctx.imageSmoothingEnabled = true;
+        pctx.imageSmoothingQuality = "high";
+        pctx.drawImage(out, 0, 0, pw, ph);
+        setAfterUrl(pcv.toDataURL("image/jpeg", 0.9));
       });
     }, 40);
     return () => {
@@ -246,6 +265,7 @@ export default function Studio() {
     setShadow(DEFAULT_SHADOW);
     setSize(100);
     setHeight(72);
+    setOffsetX(0);
     setAnalysis(null);
     setRecommended([]);
     setConfidence(null);
@@ -646,6 +666,17 @@ export default function Studio() {
                     <dd className="font-medium">{getStyle(recommended[0] ?? style).label}</dd>
                   </div>
                   <div className="col-span-2 mt-1 flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Objects detected</dt>
+                    <dd className="font-medium">
+                      {cutoutRef.current?.candidates.length ?? "—"}
+                      {(cutoutRef.current?.candidates.length ?? 0) > 1 && (
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          · centered one framed
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="col-span-2 flex items-center justify-between gap-2">
                     <dt className="text-muted-foreground">Cutout confidence</dt>
                     <dd className="flex items-center gap-2 font-medium">
                       <span
@@ -711,24 +742,78 @@ export default function Studio() {
                       <span className="size-1.5 rounded-full bg-primary" />
                       Before / after
                     </Badge>
-                    <Button
-                      size="sm"
-                      onClick={() => canvasRef.current && exportBanner(canvasRef.current, "relight-banner")}
-                    >
-                      <Download className="size-4" />
-                      Download PNG
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {offsetX !== 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setOffsetX(0)}
+                        >
+                          <MoveHorizontal className="size-4" />
+                          Recenter
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          const cutout = cutoutRef.current;
+                          const canvas = canvasRef.current;
+                          if (!cutout || !canvas) return;
+                          // re-render at full quality before export: JPEG preview
+                          // artifacts must not end up in the downloaded file
+                          const r = getRatio(ratio);
+                          const ctx = canvas.getContext("2d")!;
+                          const base = autoPlacement(cutout, r.w, r.h);
+                          const place: Placement = {
+                            x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
+                            y: (height / 100) * r.h,
+                            scale: base.scale * (size / 100),
+                          };
+                          ctx.clearRect(0, 0, r.w, r.h);
+                          drawBackdrop(ctx, r.w, r.h, backdrop);
+                          if (shadowsOn) {
+                            const intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
+                            paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, shadow), r.w, r.h);
+                          }
+                          drawProduct(ctx, cutout, place);
+                          exportBanner(canvas, "relight-banner");
+                        }}
+                      >
+                        <Download className="size-4" />
+                        Download PNG
+                      </Button>
+                    </div>
                   </div>
-                  <div className="mx-auto max-w-[560px]">
+                  <div
+                    ref={previewBoxRef}
+                    className="mx-auto max-w-[560px] cursor-grab touch-none select-none active:cursor-grabbing"
+                    onPointerDown={(e) => {
+                      if (e.button !== 0) return;
+                      dragRef.current = { startX: e.clientX, startOffset: offsetX };
+                      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+                    }}
+                    onPointerMove={(e) => {
+                      const d = dragRef.current;
+                      const box = previewBoxRef.current;
+                      if (!d || !box) return;
+                      const rect = box.getBoundingClientRect();
+                      // full box width maps to -1..1, clamped
+                      const next = Math.max(-1, Math.min(1, d.startOffset + ((e.clientX - d.startX) / rect.width) * 2));
+                      setOffsetX(Math.round(next * 100) / 100);
+                    }}
+                    onPointerUp={() => (dragRef.current = null)}
+                    onPointerCancel={() => (dragRef.current = null)}
+                    title="Drag horizontally to reposition the product"
+                  >
                     <BeforeAfterSlider before={beforeUrl} after={afterUrl} />
                   </div>
                   <p className="mt-3 text-center text-xs text-muted-foreground">
-                    Drag the handle · the after side re-renders live as you tune the shadow
+                    Drag the handle to compare · drag the image sideways to reposition · shadows re-render live
                   </p>
                 </Card>
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   {[
-                    { k: "Cutout", v: "Color-model guided" },
+                    { k: "Detected", v: (cutoutRef.current?.candidates.length ?? 1) + (cutoutRef.current?.candidates.length === 1 ? " object" : " objects") },
                     { k: "Shadow", v: "Coverage integral" },
                     { k: "Output", v: getRatio(ratio).w + " × " + getRatio(ratio).h },
                     { k: "Privacy", v: "On-device" },
@@ -828,7 +913,7 @@ function ProcessingState() {
       </div>
       <p className="mt-5 font-medium">Finding your product…</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        Color model → guided fill → cleanup → matting
+        Color model → guided fill → object ranking → matting
       </p>
     </Card>
   );

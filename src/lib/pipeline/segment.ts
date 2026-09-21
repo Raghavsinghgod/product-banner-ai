@@ -22,13 +22,24 @@
 //   6. A calibrated confidence score (0..1) derived from model separation,
 //      contour edge strength, and boundary regularity — surfaced in the UI.
 
+/** A candidate object the detector found, ranked by product-likelihood. */
+export type DetectedObject = {
+  box: { x: number; y: number; w: number; h: number };
+  area: number;
+  /** 0..1 product-likelihood score (size + centrality + border contact). */
+  score: number;
+};
+
 export type Cutout = {
   alpha: Uint8ClampedArray; // RGBA, RGB = source color (decontaminated), A = alpha (0..255)
   width: number;
   height: number;
   softPixels: number;
   touchedEdges: Set<number>;
+  /** Bounding box of the PRIMARY object (clutter is excluded from framing). */
   box: { x: number; y: number; w: number; h: number };
+  /** All plausible objects, ranked best-first; box === candidates[0].box. */
+  candidates: DetectedObject[];
   /** 0..1 calibrated confidence that the segmentation found the real product. */
   confidence: number;
 };
@@ -503,21 +514,75 @@ function segmentPass(
 
   // Opening (erode 1 + dilate 1): strips the remaining 1px blend halo and
   // kills sub-3px speckles in one move.
-  const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);
-
-  // keep only meaningful components: the product is large and compact
+  const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);  // keep only meaningful components: the product is large and compact
   const { labels, sizes } = components(opened, width, height);
   const minSize = Math.max(24, n * 0.004);
-  const keep = new Uint8Array(sizes.length);
-  for (let c = 0; c < sizes.length; c++) {
+  const compCount = sizes.length;
+
+  // Per-component statistics in a single pass: area, centroid, bbox, and how
+  // much of the component sits on the frame border (a clutter/leak cue).
+  const compArea = new Float64Array(compCount);
+  const compSumX = new Float64Array(compCount);
+  const compSumY = new Float64Array(compCount);
+  const compMinX = new Int32Array(compCount).fill(width);
+  const compMinY = new Int32Array(compCount).fill(height);
+  const compMaxX = new Int32Array(compCount).fill(-1);
+  const compMaxY = new Int32Array(compCount).fill(-1);
+  const compBorder = new Float64Array(compCount);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const l = labels[i];
+      if (l < 0) continue;
+      compArea[l]++;
+      compSumX[l] += x;
+      compSumY[l] += y;
+      if (x < compMinX[l]) compMinX[l] = x;
+      if (y < compMinY[l]) compMinY[l] = y;
+      if (x > compMaxX[l]) compMaxX[l] = x;
+      if (y > compMaxY[l]) compMaxY[l] = y;
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) compBorder[l]++;
+    }
+  }
+
+  // Rank every meaningful component as a product candidate. A product is:
+  // reasonably large (but not the whole frame), near the image center, and
+  // not glued to the photo border.
+  const maxDist = Math.hypot(width, height) / 2;
+  const scoreOf = (c: number): number => {
+    const af = compArea[c] / n;
+    // peaked size score: rewards 18%+ of frame, punishes near-total coverage
+    const sizeScore = af >= 0.85 ? 0.15 : Math.min(1, af / 0.18);
+    const ccx = compSumX[c] / compArea[c];
+    const ccy = compSumY[c] / compArea[c];
+    const centrality = 1 - Math.hypot(ccx - width / 2, ccy - height / 2) / maxDist;
+    const borderFrac = compArea[c] > 0 ? compBorder[c] / compArea[c] : 1;
+    return 0.55 * sizeScore + 0.3 * Math.max(0, centrality) + 0.15 * (1 - borderFrac);
+  };
+
+  const keep = new Uint8Array(compCount);
+  for (let c = 0; c < compCount; c++) {
     keep[c] = sizes[c] >= minSize ? 1 : 0;
   }
   // If nothing qualifies (very small product), keep the largest component.
-  if (keep.every((v) => v === 0) && sizes.length > 0) {
+  if (keep.every((v) => v === 0) && compCount > 0) {
     let big = 0;
-    for (let c = 1; c < sizes.length; c++) if (sizes[c] > sizes[big]) big = c;
+    for (let c = 1; c < compCount; c++) if (sizes[c] > sizes[big]) big = c;
     keep[big] = 1;
   }
+
+  // Ranked candidates (best-first), and the primary object drives the bbox so
+  // background clutter never inflates the product framing.
+  const ranked: number[] = [];
+  for (let c = 0; c < compCount; c++) if (keep[c]) ranked.push(c);
+  ranked.sort((a, b) => scoreOf(b) - scoreOf(a));
+  const candidates: DetectedObject[] = ranked.slice(0, 4).map((c) => ({
+    box: { x: compMinX[c], y: compMinY[c], w: compMaxX[c] - compMinX[c] + 1, h: compMaxY[c] - compMinY[c] + 1 },
+    area: compArea[c],
+    score: scoreOf(c),
+  }));
+  const primary = ranked.length > 0 ? ranked[0] : -1;
+
   const fg = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     const l = labels[i];
@@ -648,14 +713,21 @@ function segmentPass(
     ),
   );
 
-  // ---- bbox ---------------------------------------------------------------
+  // ---- bbox: primary object only ------------------------------------------
   let minX = width;
   let minY = height;
   let maxX = -1;
   let maxY = -1;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if (alpha[(y * width + x) * 4 + 3] > 8) {
+  if (primary >= 0) {
+    minX = compMinX[primary];
+    minY = compMinY[primary];
+    maxX = compMaxX[primary];
+    maxY = compMaxY[primary];
+  } else {
+    for (let i = 0; i < n; i++) {
+      if (alpha[i * 4 + 3] > 8) {
+        const x = i % width;
+        const y = (i / width) | 0;
         if (x < minX) minX = x;
         if (y < minY) minY = y;
         if (x > maxX) maxX = x;
@@ -677,6 +749,7 @@ function segmentPass(
     softPixels,
     touchedEdges,
     box: { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 },
+    candidates,
     confidence,
   };
 }

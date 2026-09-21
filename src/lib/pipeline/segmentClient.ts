@@ -23,6 +23,7 @@ type WorkerResult = {
   softPixels: number;
   touchedEdges: number[];
   box: Cutout["box"];
+  candidates: Cutout["candidates"];
   confidence: number;
 };
 
@@ -52,7 +53,7 @@ function getWorker(): Worker | null {
       // permanently disable the worker; future calls run sync
       worker = null;
       for (const [, resolve] of pending) {
-        resolve({ id: -1, ok: false, error: "worker crashed", width: 0, height: 0, softPixels: 0, touchedEdges: [], box: { x: 0, y: 0, w: 0, h: 0 }, confidence: 0 });
+        resolve({ id: -1, ok: false, error: "worker crashed", width: 0, height: 0, softPixels: 0, touchedEdges: [], box: { x: 0, y: 0, w: 0, h: 0 }, candidates: [], confidence: 0 });
       }
       pending.clear();
     });
@@ -98,6 +99,7 @@ export function segmentAsync(input: SegInput): Promise<Cutout> {
         softPixels: res.softPixels,
         touchedEdges: new Set(res.touchedEdges),
         box: res.box,
+        candidates: res.candidates ?? [],
         confidence: res.confidence,
       });
     };
