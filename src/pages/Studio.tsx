@@ -21,7 +21,8 @@ import {
 } from "@/lib/pipeline/banner";
 import { getDemoBefore } from "@/lib/pipeline/demo";
 import { paintShadow, renderShadow } from "@/lib/pipeline/shadow";
-import { segment, type Cutout } from "@/lib/pipeline/segment";
+import { segmentAsync } from "@/lib/pipeline/segmentClient";
+import type { Cutout } from "@/lib/pipeline/segment";
 import { DEFAULT_SHADOW, type ShadowOptions } from "@/lib/pipeline/shadow";
 import {
   analyzeCutout,
@@ -112,10 +113,10 @@ export default function Studio() {
     runSegment(data.data, w, h, tolerance);
   };
 
-  // ---- segmentation ------------------------------------------------------
-  const runSegment = (rgba: Uint8ClampedArray, w: number, h: number, tol: number) => {
+  // ---- segmentation (async — runs in a worker when available) ------------
+  const runSegment = async (rgba: Uint8ClampedArray, w: number, h: number, tol: number) => {
     try {
-      const cutout = segment(rgba, w, h, { tolerance: tol });
+      const cutout = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
       const { box } = cutout;
       cutoutRef.current = cutout;
       setConfidence(cutout.confidence);
@@ -234,7 +235,7 @@ export default function Studio() {
     const src = sourceRef.current;
     if (!src) return;
     setStage("processing");
-    setTimeout(() => runSegment(src.data.data, src.width, src.height, tolerance), 30);
+    setTimeout(() => void runSegment(src.data.data, src.width, src.height, tolerance), 30);
   };
 
   // Pick one of the five output styles; the style drives backdrop + shadow
@@ -566,7 +567,7 @@ export default function Studio() {
                   const src = sourceRef.current;
                   if (src) {
                     setStage("processing");
-                    setTimeout(() => runSegment(src.data.data, src.width, src.height, v), 30);
+                    setTimeout(() => void runSegment(src.data.data, src.width, src.height, v), 30);
                   }
                 }}
               />
@@ -704,8 +705,8 @@ export default function Studio() {
                 </Card>
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   {[
-                    { k: "Cutout", v: "Edge-guided fill" },
-                    { k: "Shadow", v: "AO + cast heave" },
+                    { k: "Cutout", v: "Color-model guided" },
+                    { k: "Shadow", v: "Coverage integral" },
                     { k: "Output", v: getRatio(ratio).w + " × " + getRatio(ratio).h },
                     { k: "Privacy", v: "On-device" },
                   ].map((s) => (
@@ -804,7 +805,7 @@ function ProcessingState() {
       </div>
       <p className="mt-5 font-medium">Finding your product…</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        Edge map → flood fill → cleanup → feathering
+        Color model → guided fill → cleanup → matting
       </p>
     </Card>
   );
