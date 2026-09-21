@@ -8,6 +8,8 @@
 // segmentClient.ts's pending map. If the worker crashes, the client
 // permanently falls back to synchronous execution.
 
+import { segment } from "./segment";
+
 type SegRequest = {
   id: number;
   buffer: ArrayBuffer;
