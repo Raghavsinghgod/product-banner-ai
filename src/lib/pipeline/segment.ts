@@ -57,27 +57,29 @@ const clamp255 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
 /** Compact RGB k-means with k-means++-style spreading init. */
 function kmeans(
-  samples: number[], // packed rgb (r<<16|g<<8|b)
+  count: number,
+  samples: Uint32Array, // packed rgb (r<<16|g<<8|b), first `count` entries valid
   k: number,
   iters = 10,
 ): Array<[number, number, number]> {
-  if (samples.length === 0) return [[255, 255, 255]];
-  if (samples.length <= k) {
-    return samples.map((s) => [(s >> 16) & 255, (s >> 8) & 255, s & 255]);
+  if (count === 0) return [[255, 255, 255]];
+  if (count <= k) {
+    const out: Array<[number, number, number]> = [];
+    for (let i = 0; i < count; i++) out.push(unpackPacked(samples[i]));
+    return out;
   }
 
-  const unpack = (s: number): [number, number, number] => [
-    (s >> 16) & 255,
-    (s >> 8) & 255,
-    s & 255,
-  ];
-
-  // spreading init: sort by luminance and pick quantile seeds
-  const sorted = samples.slice().sort((a, b) => {
-    const la = ((a >> 16) & 255) + ((a >> 8) & 255) + (a & 255);
-    const lb = ((b >> 16) & 255) + ((b >> 8) & 255) + (b & 255);
-    return la - lb;
-  });
+  // spreading init: sort by luminance and pick quantile seeds.
+  // Pack luminance into the high bits and index into the low bits, then sort
+  // the combined value — avoids allocating a parallel array of pairs.
+  const keyed = new Uint32Array(count);
+  for (let i = 0; i < count; i++) {
+    const s = samples[i];
+    const lum = ((s >> 16) & 255) + ((s >> 8) & 255) + (s & 255); // 0..765 -> 10 bits
+    keyed[i] = (lum << 22) | i;
+  }
+  const sorted = keyed.slice().sort();
+  const unpack = unpackPacked;
   const centers: Array<[number, number, number]> = [];
   for (let c = 0; c < k; c++) {
     const idx = Math.min(
@@ -87,10 +89,10 @@ function kmeans(
     centers.push(unpack(sorted[idx]));
   }
 
-  const assign = new Uint8Array(samples.length);
+  const assign = new Uint8Array(count);
   for (let iter = 0; iter < iters; iter++) {
     let moved = false;
-    for (let i = 0; i < samples.length; i++) {
+    for (let i = 0; i < count; i++) {
       const [r, g, b] = unpack(samples[i]);
       let bi = 0;
       let bd = Infinity;
@@ -109,7 +111,7 @@ function kmeans(
     }
     if (!moved && iter > 0) break;
     const sums = centers.map(() => [0, 0, 0, 0]);
-    for (let i = 0; i < samples.length; i++) {
+    for (let i = 0; i < count; i++) {
       const a = sums[assign[i]];
       const [r, g, b] = unpack(samples[i]);
       a[0] += r;
@@ -124,6 +126,11 @@ function kmeans(
     }
   }
   return centers;
+}
+
+/** Unpack a packed rgb uint32 into [r, g, b]. */
+function unpackPacked(s: number): [number, number, number] {
+  return [(s >> 16) & 255, (s >> 8) & 255, s & 255];
 }
 
 /** Weighted distance from a pixel to the nearest background cluster center.
@@ -384,11 +391,16 @@ function segmentPass(
   // Sample the border ring (product photos nearly always have clear backdrop
   // at the frame) and model it with k-means. Up to 4 clusters capture
   // multi-tone walls, desk edges, and gradients.
-  const samples: number[] = [];
+  // Typed array (not number[]): avoids boxing ~100k+ doubles per pass and
+  // keeps the retry passes' GC pressure near zero.
   const ring = Math.max(2, Math.round(Math.min(width, height) * 0.06));
+  const maxSamples = Math.ceil(width / 2) * Math.ceil(ring / 2) * 2 * 2 + Math.ceil((height - 2 * ring) / 2) * Math.ceil(ring / 2) * 2 * 2;
+  const samples = new Uint32Array(maxSamples);
+  let sc = 0;
   const addSample = (x: number, y: number) => {
+    if (sc >= maxSamples) return;
     const p = (y * width + x) * 4;
-    samples.push((rgba[p] << 16) | (rgba[p + 1] << 8) | rgba[p + 2]);
+    samples[sc++] = ((rgba[p] << 16) | (rgba[p + 1] << 8) | rgba[p + 2]) >>> 0;
   };
   for (let x = 0; x < width; x += 2) {
     for (let t = 0; t < ring; t += 2) {
@@ -402,7 +414,7 @@ function segmentPass(
       addSample(width - 1 - t, y);
     }
   }
-  const bgCenters = kmeans(samples, 4);
+  const bgCenters = kmeans(sc, samples, 4);
 
   // Per-axis scale from cluster spread: tight axes weigh more.
   const scale: [number, number, number] = [12, 12, 12];

@@ -155,6 +155,11 @@ export function renderShadowIntensity(
   }
 
   // ---- 2. two-scale filtering: sharp at contact, soft away -----------------
+  // distanceOutside is needed by both the filter blend and the contact AO —
+  // compute it at most once and share it (it's a full-canvas chamfer pass).
+  let sharedOutside: Float32Array | null = null;
+  const getOutside = () => (sharedOutside ??= distanceOutside(sil, canvasW, canvasH));
+
   let castSoft = cast;
   if (travel > 0.5) {
     const rNear = Math.max(1, Math.round(longest * 0.012));
@@ -162,7 +167,7 @@ export function renderShadowIntensity(
     const tight = boxBlur3(cast, canvasW, canvasH, rNear);
     const soft = boxBlur3(cast, canvasW, canvasH, Math.min(rFar, 40));
     // distance from the contact footprint drives the blend
-    const dOut = distanceOutside(sil, canvasW, canvasH);
+    const dOut = getOutside();
     const reach = Math.max(1, longest * (0.12 + 0.5 * opts.softness));
     castSoft = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -177,7 +182,7 @@ export function renderShadowIntensity(
   const ao = new Float32Array(n);
   if (opts.contact) {
     const inner = distanceInside(sil, canvasW, canvasH);
-    const outside = distanceOutside(sil, canvasW, canvasH);
+    const outside = getOutside();
     const band = 3 + 5 * opts.softness;
     const ampOut = 0.32 * (0.75 + 0.25 * opts.softness);
     const ampIn = 0.4;

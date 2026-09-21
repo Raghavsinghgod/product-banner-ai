@@ -84,6 +84,8 @@ export default function Studio() {
   const inputRef = useRef<HTMLInputElement>(null);
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startOffset: number } | null>(null);
+  /** Reused preview-downscale canvas (avoids a new allocation per render tick). */
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [cutoutTick, setCutoutTick] = useState(0);
 
   // ---- load a File -------------------------------------------------------
@@ -233,10 +235,11 @@ export default function Studio() {
         drawProduct(ctx, cutout, place);
         // Preview: downscale + JPEG. PNG of the full 1080x1350 canvas is far
         // too slow to run on every slider tick; the full-res PNG is re-rendered
-        // at export time instead.
+        // at export time instead. The downscale canvas is reused across ticks.
         const pw = 648;
         const ph = Math.round((r.h / r.w) * pw);
-        const pcv = document.createElement("canvas");
+        const pcv = previewCanvasRef.current ?? document.createElement("canvas");
+        previewCanvasRef.current = pcv;
         pcv.width = pw;
         pcv.height = ph;
         const pctx = pcv.getContext("2d")!;
@@ -257,6 +260,7 @@ export default function Studio() {
     sourceRef.current = null;
     canvasRef.current = null;
     shadowCacheRef.current = null;
+    previewCanvasRef.current = null;
     setStage("empty");
     setBeforeUrl(null);
     setAfterUrl(null);
