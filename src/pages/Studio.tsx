@@ -69,6 +69,7 @@ export default function Studio() {
   const [shadowsOn, setShadowsOn] = useState(true);
   const [analysis, setAnalysis] = useState<StyleAnalysis | null>(null);
   const [recommended, setRecommended] = useState<OutputStyleId[]>([]);
+  const [confidence, setConfidence] = useState<number | null>(null);
   const [size, setSize] = useState(100); // percent of auto scale
   const [height, setHeight] = useState(72); // baseline percent of canvas height
   const [tolerance, setTolerance] = useState(26);
@@ -117,6 +118,7 @@ export default function Studio() {
       const cutout = segment(rgba, w, h, { tolerance: tol });
       const { box } = cutout;
       cutoutRef.current = cutout;
+      setConfidence(cutout.confidence);
       setEdgeWarning(cutout.touchedEdges.size > 0);
       const coversAll = box.w > w * 0.97 && box.h > h * 0.97;
       setFitWarning(coversAll);
@@ -222,6 +224,7 @@ export default function Studio() {
     setHeight(72);
     setAnalysis(null);
     setRecommended([]);
+    setConfidence(null);
     setStyle("white-shadow");
     setShadowsOn(true);
     setBackdrop("studio");
@@ -617,6 +620,22 @@ export default function Studio() {
                   <div className="flex justify-between gap-2">
                     <dt className="text-muted-foreground">Best style</dt>
                     <dd className="font-medium">{getStyle(recommended[0] ?? style).label}</dd>
+                  </div>
+                  <div className="col-span-2 mt-1 flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Cutout confidence</dt>
+                    <dd className="flex items-center gap-2 font-medium">
+                      <span
+                        className={cn(
+                          "inline-block size-2 rounded-full",
+                          confidence !== null && confidence >= 0.6
+                            ? "bg-emerald-500"
+                            : confidence !== null && confidence >= 0.35
+                              ? "bg-amber-500"
+                              : "bg-destructive",
+                        )}
+                      />
+                      {confidence !== null ? Math.round(confidence * 100) + "%" : "—"}
+                    </dd>
                   </div>
                 </dl>
               </Card>
