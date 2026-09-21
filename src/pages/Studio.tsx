@@ -375,6 +375,22 @@ export default function Studio() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <a
+        href="#studio-controls"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
+      >
+        Skip to controls
+      </a>
+      {/* polite live region: announces processing/result status to screen readers */}
+      <p aria-live="polite" className="sr-only">
+        {stage === "processing" && "Processing photo: finding your product."}
+        {stage === "ready" &&
+          `Photo ready. ${cutoutRef.current?.candidates.length ?? 1} object${(cutoutRef.current?.candidates.length ?? 1) === 1 ? "" : "s"} detected. Cutout confidence ${Math.round((confidence ?? 0) * 100)} percent.`}
+        {stage === "error" &&
+          (fitWarning
+            ? "Could not find a clear product. The whole photo was kept."
+            : "Could not isolate a product in that photo.")}
+      </p>
       {/* top bar */}
       <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-4 sm:px-6">
@@ -396,7 +412,7 @@ export default function Studio() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6">
+      <main id="studio-controls" className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6">
         <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
           {/* -------------------------------------------------- controls */}
           <div className="flex flex-col gap-4">
@@ -422,8 +438,14 @@ export default function Studio() {
               <div
                 role="button"
                 tabIndex={0}
+                aria-label="Upload a photo: drop an image here, or press Enter to browse files"
                 onClick={() => inputRef.current?.click()}
-                onKeyDown={(e) => e.key === "Enter" && inputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    inputRef.current?.click();
+                  }
+                }}
                 onDragOver={(e) => {
                   e.preventDefault();
                   setDragOver(true);
@@ -461,22 +483,28 @@ export default function Studio() {
             </Card>
 
             {/* output styles */}
-            <Card className={cn("p-5", stage !== "ready" && "pointer-events-none opacity-50")}>
+            <Card
+              className={cn("p-5", stage !== "ready" && "pointer-events-none opacity-50")}
+              aria-disabled={stage !== "ready"}
+            >
               <div className="mb-3 flex items-center gap-2">
                 <Sparkles className="size-4 text-primary" />
                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
                   2 · Output style
                 </h2>
               </div>
-              <div className="grid gap-2">
+              <div className="grid gap-2" role="radiogroup" aria-label="Output style">
                 {OUTPUT_STYLES.map((s) => {
                   const rank = recommended.indexOf(s.id);
                   return (
                     <button
                       key={s.id}
                       onClick={() => applyStyle(s.id)}
+                      role="radio"
+                      aria-checked={style === s.id}
+                      aria-label={`${s.label} — ${s.blurb}`}
                       className={cn(
-                        "group flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                        "group flex min-h-11 items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
                         style === s.id
                           ? "border-primary bg-primary/5"
                           : "border-border hover:border-primary/40 hover:bg-muted/50",
@@ -517,29 +545,34 @@ export default function Studio() {
                   );
                 })}
               </div>
-              {!shadowsOn && (
+              {!shadowsOn && stage === "ready" && (
                 <p className="mt-3 text-xs text-muted-foreground">
-                  Shadows are off for this style — flip the switch below to add them.
+                  Shadows are off for this style — flip the switch in step 4 to add them.
                 </p>
               )}
             </Card>
 
             {/* backdrop + ratio */}
-            <Card className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")}>
+            <Card
+              className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")}
+              aria-disabled={stage !== "ready"}
+            >
               <div className="mb-3 flex items-center gap-2">
                 <Wand2 className="size-4 text-primary" />
                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
                   3 · Backdrop &amp; size
                 </h2>
               </div>
-              <div className="grid grid-cols-6 gap-2">
+              <div className="grid grid-cols-6 gap-2" role="radiogroup" aria-label="Backdrop color">
                 {BACKDROPS.map((b) => (
                   <button
                     key={b.id}
                     title={b.label}
                     onClick={() => setBackdrop(b.id)}
+                    role="radio"
+                    aria-checked={backdrop === b.id}
                     className={cn(
-                      "h-9 rounded-lg ring-1 ring-black/10 transition-transform hover:scale-105 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "h-10 rounded-lg ring-1 ring-black/10 transition-transform hover:scale-105 outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       backdrop === b.id && "ring-2 ring-primary ring-offset-2 ring-offset-card",
                     )}
                     style={{ background: b.swatch }}
@@ -547,13 +580,16 @@ export default function Studio() {
                   />
                 ))}
               </div>
-              <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="mt-4 grid grid-cols-3 gap-2" role="radiogroup" aria-label="Output size">
                 {RATIOS.map((r) => (
                   <button
                     key={r.id}
                     onClick={() => setRatio(r.id)}
+                    role="radio"
+                    aria-checked={ratio === r.id}
+                    aria-label={`${r.label} — ${r.hint}`}
                     className={cn(
-                      "rounded-lg border px-2 py-2 text-sm font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                      "min-h-10 rounded-lg border px-2 py-2 text-sm font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
                       ratio === r.id
                         ? "border-primary bg-primary/5 text-primary"
                         : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground",
@@ -572,7 +608,10 @@ export default function Studio() {
             </Card>
 
             {/* shadows */}
-            <Card className={cn("p-5", (stage !== "ready" || !shadowsOn) && "opacity-50 pointer-events-none")}>
+            <Card
+              className={cn("p-5", (stage !== "ready" || !shadowsOn) && "opacity-50 pointer-events-none")}
+              aria-disabled={stage !== "ready" || !shadowsOn}
+            >
               <div className="mb-3 flex items-center gap-2">
                 <Wand2 className="size-4 text-primary" />
                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
@@ -581,7 +620,9 @@ export default function Studio() {
               </div>
               <button
                 onClick={() => setShadowsOn(!shadowsOn)}
-                className="mb-4 flex w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                role="switch"
+                aria-checked={shadowsOn}
+                className="mb-4 flex min-h-11 w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               >
                 <span className="text-muted-foreground">Shadows</span>
                 <span
@@ -598,13 +639,15 @@ export default function Studio() {
                   />
                 </span>
               </button>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Shadow preset">
                 {SHADOW_PRESETS.map((p) => (
                   <button
                     key={p.id}
                     onClick={() => setShadow({ ...shadow, ...p.opts })}
+                    role="radio"
+                    aria-checked={activePreset?.id === p.id}
                     className={cn(
-                      "rounded-lg border px-2.5 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                      "min-h-11 rounded-lg border px-2.5 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
                       activePreset?.id === p.id
                         ? "border-primary bg-primary/5 text-primary"
                         : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground",
@@ -649,7 +692,9 @@ export default function Studio() {
                 />
                 <button
                   onClick={() => setShadow({ ...shadow, contact: !shadow.contact })}
-                  className="flex w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  role="switch"
+                  aria-checked={shadow.contact}
+                  className="flex min-h-11 w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 >
                   <span className="text-muted-foreground">Contact shadow</span>
                   <span
@@ -966,6 +1011,7 @@ function SliderRow({
         min={min}
         max={max}
         step={1}
+        aria-label={label}
         onValueChange={(vals) => onChange(vals[0])}
         onValueCommit={onCommit ? (vals) => onCommit(vals[0]) : undefined}
       />
@@ -984,12 +1030,12 @@ function EmptyState({ onBrowse, onSample }: { onBrowse: () => void; onSample: ()
         A mug on a cluttered desk, a jacket on a bed — anything a human could point at.
         Everything runs on your device; nothing is uploaded.
       </p>
-      <div className="mt-6 flex gap-2">
-        <Button onClick={onBrowse}>
+      <div className="mt-6 flex flex-col gap-2 min-[380px]:flex-row">
+        <Button onClick={onBrowse} className="min-h-11">
           <ImageUp className="size-4" />
           Choose a photo
         </Button>
-        <Button variant="outline" onClick={onSample}>
+        <Button variant="outline" onClick={onSample} className="min-h-11">
           <Sparkles className="size-4 text-primary" />
           Use sample
         </Button>
@@ -1000,15 +1046,19 @@ function EmptyState({ onBrowse, onSample }: { onBrowse: () => void; onSample: ()
 
 function ProcessingState() {
   return (
-    <Card className="flex flex-col items-center justify-center rounded-2xl p-20 text-center">
+    <Card
+      className="flex flex-col items-center justify-center rounded-2xl p-20 text-center"
+      role="status"
+      aria-label="Processing photo"
+    >
       <div className="relative flex size-16 items-center justify-center">
         <span className="absolute inset-0 animate-ping rounded-full bg-primary/15" />
         <span className="absolute inset-2 rounded-full bg-primary/10" />
-        <Wand2 className="size-6 text-primary" />
+        <Wand2 className="size-6 text-primary" aria-hidden="true" />
       </div>
       <p className="mt-5 font-medium">Finding your product…</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        Color model → guided fill → object ranking → matting
+        Runs entirely on this device — usually takes a couple of seconds.
       </p>
     </Card>
   );
