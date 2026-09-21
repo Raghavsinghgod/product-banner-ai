@@ -30,6 +30,17 @@ export type StyleAnalysis = {
   glossy: number; // 0..1 (0 matte, 1 glossy)
   softGoods: boolean;
   category: string; // human-readable guess
+  // ---- v2 attributes (feed the generative design engine) -----------------
+  /** -1 cool .. +1 warm mean product color temperature. */
+  temperature: number;
+  /** 0..1 how strongly the object fills its bbox (1 = solid slab, 0 = spindly). */
+  solidity: number;
+  /** 0..1 aspect elongation (0 = square-ish, 1 = very elongated). */
+  elongation: number;
+  /** 0..1 silhouette boundary complexity (0 = smooth, 1 = intricate). */
+  intricacy: number;
+  /** 0..1 fraction of pixels that are specular highlights. */
+  sheen: number;
 };
 
 export type OutputStyleId = "pure-white" | "white-shadow" | "premium-desk" | "studio" | "moody";
@@ -246,7 +257,55 @@ export function analyzeCutout(cutout: Cutout): StyleAnalysis {
         ? "Dark product"
         : "General product";
 
-  return { palette, tone, contrast, saturation, glossy, softGoods, category };
+  // ---- v2 attributes -------------------------------------------------------
+  // color temperature: mean of warm-channel dominance on saturated pixels
+  let tempSum = 0;
+  let tempCount = 0;
+  let sheenHits = 0;
+  for (const [r, g, b] of samples) {
+    const l = lum(r, g, b);
+    const c = chroma(r, g, b);
+    if (c > 0.08) {
+      tempSum += (r - b) / (l + 0.05); // warm when red beats blue
+      tempCount++;
+    }
+    if (l > 0.93) sheenHits++;
+  }
+  const temperature = tempCount > 0 ? Math.max(-1, Math.min(1, (tempSum / tempCount) * 1.2)) : 0;
+  const sheen = sheenHits / Math.max(1, samples.length);
+
+  // solidity: alpha coverage of the bbox
+  const { box } = cutout;
+  const boxArea = Math.max(1, box.w * box.h);
+  let alphaArea = 0;
+  for (let y = box.y; y < Math.min(h, box.y + box.h); y++) {
+    for (let x = box.x; x < Math.min(w, box.x + box.w); x++) {
+      if (alpha[(y * w + x) * 4 + 3] > 128) alphaArea++;
+    }
+  }
+  const solidity = Math.min(1, alphaArea / boxArea);
+
+  // elongation: 0 = square bbox, 1 = very elongated
+  const aspect = Math.max(box.w, box.h) / Math.max(1, Math.min(box.w, box.h));
+  const elongation = Math.min(1, (aspect - 1) / 2);
+
+  // intricacy: perimeter-to-area of the silhouette (chamfer-free estimate:
+  // count alpha transitions along rows + columns inside the bbox)
+  let transitions = 0;
+  for (let y = box.y; y < Math.min(h, box.y + box.h); y++) {
+    let prev = false;
+    for (let x = box.x; x < Math.min(w, box.x + box.w); x++) {
+      const cur = alpha[(y * w + x) * 4 + 3] > 128;
+      if (cur !== prev) transitions++;
+      prev = cur;
+    }
+  }
+  const intricacy = Math.min(1, transitions / Math.max(1, alphaArea * 0.12));
+
+  return {
+    palette, tone, contrast, saturation, glossy, softGoods, category,
+    temperature, solidity, elongation, intricacy, sheen,
+  };
 }
 
 /**

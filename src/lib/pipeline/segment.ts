@@ -628,36 +628,78 @@ function segmentPass(
   bcount = Math.max(1, bcount);
   const bgMean = [br / bcount, bg2 / bcount, bb / bcount];
 
+  // Edge-band decontamination context: for each contour pixel, estimate the
+  // true product color by walking INWARD along the signed-distance gradient.
+  // The old one-sided heuristic (only darken toward bgMean) left bright
+  // environment fringes intact — the most common "background remover still
+  // keeps edges of the environment" complaint.
+  const sdGradX = new Float32Array(n);
+  const sdGradY = new Float32Array(n);
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = y * width + x;
+      sdGradX[i] = sd[i + 1] - sd[i - 1];
+      sdGradY[i] = sd[i + width] - sd[i - width];
+    }
+  }
+
   for (let i = 0; i < n; i++) {
     const d = sd[i];
+    // adaptive band: strong edges get a tight mat (crisp silhouettes), soft
+    // edges a wider one (hair, fabric) — fixed ±1.5px kept fringes on both.
+    const ec = Math.min(1, edge[i] / 255);
+    const band = 1 + (1 - ec) * 1.5; // 1.0..2.5 px half-width
     let a: number;
-    if (d <= -1.5) {
+    if (d <= -band) {
       a = 255;
-    } else if (d >= 1.5) {
+    } else if (d >= band) {
       a = 0;
     } else {
-      // smooth ramp across the contour: -1.5..1.5 px -> 255..0
-      const t = (d + 1.5) / 3;
+      const t = (d + band) / (2 * band);
       a = Math.round(255 * (1 - t));
-      // edge-confidence nudges the ramp toward the visually correct side
-      const ec = Math.min(1, edge[i] / 255);
-      a = clamp255(a * (1 - ec * 0.15) + (filled[i] ? ec * 20 : 0));
+      a = clamp255(a + (filled[i] ? ec * 20 : 0));
       softPixels++;
     }
     const p = i * 4;
-    alpha[p] = rgba[p];
-    alpha[p + 1] = rgba[p + 1];
-    alpha[p + 2] = rgba[p + 2];
-    alpha[p + 3] = a;
 
-    // decontaminate semi-transparent edge pixels: pull RGB away from the
-    // backdrop mean to kill halo fringes on the composite
-    if (a > 0 && a < 250) {
-      const w = a / 255;
-      alpha[p] = clamp255(rgba[p] - (rgba[p] - bgMean[0]) * w * 0.35 * (rgba[p] < bgMean[0] ? 1 : 0));
-      alpha[p + 1] = clamp255(rgba[p + 1] - (rgba[p + 1] - bgMean[1]) * w * 0.35 * (rgba[p + 1] < bgMean[1] ? 1 : 0));
-      alpha[p + 2] = clamp255(rgba[p + 2] - (rgba[p + 2] - bgMean[2]) * w * 0.35 * (rgba[p + 2] < bgMean[2] ? 1 : 0));
+    // two-sided decontamination for the whole transition band: project the
+    // pixel color onto the line between the estimated product color (a few
+    // px inside) and the background model. Removes BOTH dark and light
+    // environment fringes, not just one side.
+    let or_ = rgba[p];
+    let og = rgba[p + 1];
+    let ob = rgba[p + 2];
+    if (a > 0 && a < 255) {
+      const x = i % width;
+      const y = (i / width) | 0;
+      const gl = Math.hypot(sdGradX[i], sdGradY[i]) || 1;
+      // walk 2px toward the product interior
+      const stepIn = 2;
+      const ix = Math.round(Math.max(0, Math.min(width - 1, x + (sdGradX[i] / gl) * -stepIn)));
+      const iy = Math.round(Math.max(0, Math.min(height - 1, y + (sdGradY[i] / gl) * -stepIn)));
+      const ip = (iy * width + ix) * 4;
+      const pr = rgba[ip];
+      const pg = rgba[ip + 1];
+      const pb = rgba[ip + 2];
+      const mix = a / 255;
+      // pull the observed color off the bg->product line by the alpha mix:
+      // unmix C = bg + mix*(product - bg)  =>  product_est = bg + (C - bg)/max(mix,0.25)
+      const inv = 1 / Math.max(0.25, mix);
+      const estR = bgMean[0] + (or_ - bgMean[0]) * inv;
+      const estG = bgMean[1] + (og - bgMean[1]) * inv;
+      const estB = bgMean[2] + (ob - bgMean[2]) * inv;
+      // blend the unmix estimate with the inward sample (guards against
+      // walking into a different-colored interior region)
+      const wIn = 0.45;
+      or_ = clamp255((estR * (1 - wIn) + pr * wIn) * 0.35 + or_ * 0.65);
+      og = clamp255((estG * (1 - wIn) + pg * wIn) * 0.35 + og * 0.65);
+      ob = clamp255((estB * (1 - wIn) + pb * wIn) * 0.35 + ob * 0.65);
     }
+
+    alpha[p] = or_;
+    alpha[p + 1] = og;
+    alpha[p + 2] = ob;
+    alpha[p + 3] = a;
   }
 
   // ---- confidence ---------------------------------------------------------

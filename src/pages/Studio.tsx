@@ -19,6 +19,8 @@ import {
   type RatioId,
 } from "@/lib/pipeline/banner";
 import { getDemoBefore } from "@/lib/pipeline/demo";
+import { generateDesign, paintDesign, randomSeed, type GeneratedDesign } from "@/lib/pipeline/design";
+import { upscaleImage } from "@/lib/pipeline/upscale";
 import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
 import type { Cutout } from "@/lib/pipeline/segment";
@@ -77,6 +79,11 @@ export default function Studio() {
   const [tolerance, setTolerance] = useState(26);
   /** Horizontal placement offset, -1..1 = fraction of half the free canvas width. */
   const [offsetX, setOffsetX] = useState(0);
+  /** Upscale factor applied to the source photo before segmentation. */
+  const [upscaleFactor, setUpscaleFactor] = useState<1 | 2 | 3>(1);
+  /** Active generative design (null = use the fixed backdrop picker). */
+  const [design, setDesign] = useState<GeneratedDesign | null>(null);
+  const [designSeed, setDesignSeed] = useState<number | null>(null);
 
   const cutoutRef = useRef<Cutout | null>(null);
   const sourceRef = useRef<{ data: ImageData; width: number; height: number } | null>(null);
@@ -104,14 +111,41 @@ export default function Studio() {
 
   const ingestBitmap = async (bitmap: ImageBitmap) => {
     const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
-    const w = Math.max(1, Math.round(bitmap.width * scale));
-    const h = Math.max(1, Math.round(bitmap.height * scale));
+    let w = Math.max(1, Math.round(bitmap.width * scale));
+    let h = Math.max(1, Math.round(bitmap.height * scale));
     const cv = document.createElement("canvas");
     cv.width = w;
     cv.height = h;
     const ctx = cv.getContext("2d", { willReadFrequently: true })!;
     ctx.drawImage(bitmap, 0, 0, w, h);
-    const data = ctx.getImageData(0, 0, w, h);
+    let data = ctx.getImageData(0, 0, w, h);
+
+    // Detail-preserving upscale (edge-directed interpolation + halo-safe
+    // sharpening). Small phone crops come in soft; this restores crisp
+    // product edges, text and seams BEFORE segmentation so the cutout,
+    // shadows and the banner all inherit the extra detail.
+    if (upscaleFactor > 1) {
+      try {
+        const up = upscaleImage(data.data, w, h, {
+          factor: upscaleFactor === 3 ? 3 : 2,
+          sharpening: 0.55,
+          crispness: 0.75,
+        });
+        w = up.width;
+        h = up.height;
+        const ucv = document.createElement("canvas");
+        ucv.width = w;
+        ucv.height = h;
+        const uctx = ucv.getContext("2d", { willReadFrequently: true })!;
+        const id = uctx.createImageData(w, h);
+        id.data.set(up.rgba);
+        uctx.putImageData(id, 0, 0);
+        data = uctx.getImageData(0, 0, w, h);
+      } catch (err) {
+        console.warn("upscale failed, continuing at native size", err);
+      }
+    }
+
     sourceRef.current = { data, width: w, height: h };
     setBeforeUrl(cv.toDataURL("image/jpeg", 0.85));
 
@@ -145,6 +179,8 @@ export default function Studio() {
       setSize(100);
       setHeight(72);
       setOffsetX(0);
+      setDesign(null);
+      setDesignSeed(null);
       setCutoutTick((t) => t + 1);
       setStage(coversAll ? "error" : "ready");
     } catch (err) {
@@ -210,7 +246,11 @@ export default function Studio() {
           scale: base.scale * (size / 100),
         };
         ctx.clearRect(0, 0, r.w, r.h);
-        drawBackdrop(ctx, r.w, r.h, backdrop);
+        if (design) {
+          paintDesign(ctx, r.w, r.h, design);
+        } else {
+          drawBackdrop(ctx, r.w, r.h, backdrop);
+        }
         if (shadowsOn) {
           const geoKey = [
             cutoutTick,
@@ -221,6 +261,7 @@ export default function Studio() {
             shadow.direction,
             shadow.length,
             shadow.softness,
+            design?.seed ?? "fixed",
           ].join("|");
           let intensity = shadowCacheRef.current?.intensity;
           if (!shadowCacheRef.current || shadowCacheRef.current.key !== geoKey) {
@@ -253,7 +294,7 @@ export default function Studio() {
       clearTimeout(t);
       cancelAnimationFrame(raf);
     };
-  }, [stage, cutoutTick, backdrop, ratio, shadow, shadowsOn, size, height, offsetX]);
+  }, [stage, cutoutTick, backdrop, ratio, shadow, shadowsOn, size, height, offsetX, design]);
 
   const reset = () => {
     cutoutRef.current = null;
@@ -272,6 +313,8 @@ export default function Studio() {
     setSize(100);
     setHeight(72);
     setOffsetX(0);
+    setDesign(null);
+    setDesignSeed(null);
     setAnalysis(null);
     setRecommended([]);
     setConfidence(null);
@@ -322,7 +365,11 @@ export default function Studio() {
       scale: base.scale * (size / 100),
     };
     ctx.clearRect(0, 0, r.w, r.h);
-    drawBackdrop(ctx, r.w, r.h, backdrop);
+    if (design) {
+      paintDesign(ctx, r.w, r.h, design);
+    } else {
+      drawBackdrop(ctx, r.w, r.h, backdrop);
+    }
     if (shadowsOn) {
       const intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
       paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, shadow), r.w, r.h);
@@ -349,7 +396,12 @@ export default function Studio() {
       scale: base.scale * (size / 100),
     };
     ctx.clearRect(0, 0, r.w, r.h);
-    drawBackdrop(ctx, r.w, r.h, def.backdrop);
+    if (design && id === style) {
+      // batch export of the CURRENT look keeps the active generated design
+      paintDesign(ctx, r.w, r.h, design);
+    } else {
+      drawBackdrop(ctx, r.w, r.h, def.backdrop);
+    }
     if (def.shadows) {
       const intensity = renderShadowIntensity(cutout, place, r.w, r.h, def.shadow);
       paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, def.shadow), r.w, r.h);
@@ -480,6 +532,35 @@ export default function Studio() {
                 <Sparkles className="size-4 text-primary" />
                 Try the sample photo
               </Button>
+              <div className="mt-3">
+                <Label className="text-xs text-muted-foreground">Detail boost (upscale)</Label>
+                <div
+                  className="mt-1.5 grid grid-cols-3 gap-2"
+                  role="radiogroup"
+                  aria-label="Upscale factor"
+                >
+                  {([1, 2, 3] as const).map((f) => (
+                    <button
+                      key={f}
+                      onClick={() => setUpscaleFactor(f)}
+                      role="radio"
+                      aria-checked={upscaleFactor === f}
+                      aria-label={f === 1 ? "Native resolution" : `Upscale ${f} times`}
+                      className={cn(
+                        "min-h-10 rounded-lg border text-sm font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                        upscaleFactor === f
+                          ? "border-primary bg-primary/5 text-primary"
+                          : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground",
+                      )}
+                    >
+                      {f === 1 ? "Off" : `${f}×`}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Sharpens soft phone photos — 2× recommended for small crops.
+                </p>
+              </div>
             </Card>
 
             {/* output styles */}
@@ -552,6 +633,69 @@ export default function Studio() {
               )}
             </Card>
 
+            {/* generative design */}
+            <Card className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")} aria-disabled={stage !== "ready"}>
+              <div className="mb-3 flex items-center gap-2">
+                <Wand2 className="size-4 text-primary" />
+                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                  3 · Design
+                </h2>
+                {design && (
+                  <Badge variant="secondary" className="ml-auto h-4 rounded-full px-1.5 text-[10px]">
+                    {design.family}
+                  </Badge>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {design
+                  ? `Generated scene #${design.seed % 100000} — matched to your product's palette and finish.`
+                  : "Generate a unique studio scene tuned to your product, or keep a fixed backdrop below."}
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button
+                  variant={design ? "outline" : "default"}
+                  size="sm"
+                  className="min-h-10"
+                  disabled={stage !== "ready"}
+                  onClick={() => {
+                    const seed = randomSeed();
+                    setDesignSeed(seed);
+                    setDesign(generateDesign(analysis, seed));
+                  }}
+                >
+                  <Sparkles className="size-4 text-primary" />
+                  {design ? "Surprise again" : "Surprise design"}
+                </Button>
+                {design && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="min-h-10"
+                    onClick={() => {
+                      setDesign(null);
+                      setDesignSeed(null);
+                    }}
+                  >
+                    <RotateCcw className="size-4" />
+                    Fixed backdrop
+                  </Button>
+                )}
+              </div>
+              {design && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-2 w-full text-xs"
+                  disabled={stage !== "ready" || designSeed === null}
+                  onClick={() => {
+                    if (designSeed !== null) setDesign(generateDesign(analysis, designSeed));
+                  }}
+                >
+                  Replay this exact design (seed {designSeed! % 100000})
+                </Button>
+              )}
+            </Card>
+
             {/* backdrop + ratio */}
             <Card
               className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")}
@@ -560,7 +704,7 @@ export default function Studio() {
               <div className="mb-3 flex items-center gap-2">
                 <Wand2 className="size-4 text-primary" />
                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  3 · Backdrop &amp; size
+                  4 · Backdrop &amp; size
                 </h2>
               </div>
               <div className="grid grid-cols-6 gap-2" role="radiogroup" aria-label="Backdrop color">
@@ -615,7 +759,7 @@ export default function Studio() {
               <div className="mb-3 flex items-center gap-2">
                 <Wand2 className="size-4 text-primary" />
                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  4 · Shadow engine
+                  5 · Shadow engine
                 </h2>
               </div>
               <button
