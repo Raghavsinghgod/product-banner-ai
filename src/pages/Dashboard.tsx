@@ -2,7 +2,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { useAuth } from "@/hooks/use-auth";
 import {
   Crop,
   ImageUp,
@@ -11,17 +10,9 @@ import {
   Sparkles,
   SunMedium,
 } from "lucide-react";
-import { Link, useNavigate } from "react-router";
+import { Link } from "react-router";
 
 export default function Dashboard() {
-  const { user, signOut } = useAuth();
-  const navigate = useNavigate();
-
-  const handleSignOut = async () => {
-    await signOut();
-    navigate("/");
-  };
-
   const steps = [
     {
       icon: Crop,
@@ -30,13 +21,13 @@ export default function Dashboard() {
     },
     {
       icon: Layers,
-      title: "Compose",
-      body: "Six studio backdrops, three platform ratios (4:5, 1:1, 16:9) and live size framing.",
+      title: "Style",
+      body: "Five output styles — pure white, white + shadow, premium desk and more — auto-recommended from your photo.",
     },
     {
       icon: SunMedium,
       title: "Shadow",
-      body: "Our custom engine paints a contact ring plus a directional cast. Tune it with three sliders.",
+      body: "Our custom engine paints a contact ring plus a directional cast. Tune it with a few sliders.",
     },
   ];
 
@@ -53,20 +44,17 @@ export default function Dashboard() {
                 Your Relight workspace
               </p>
               <h1 className="mt-1 text-3xl font-bold tracking-tight">
-                Welcome{user?.name ? `, ${user.name.split(" ")[0]}` : ""}
+                Turn finds into sales
               </h1>
             </div>
           </div>
           <div className="flex items-center gap-2 self-start">
             <ThemeToggle />
-            <Button
-              type="button"
-              variant="outline"
-              className="gap-2"
-              onClick={handleSignOut}
-            >
-              <LogOut className="size-4" />
-              Sign out
+            <Button asChild className="gap-2">
+              <Link to="/studio">
+                <ImageUp className="size-4" />
+                Open the Studio
+              </Link>
             </Button>
           </div>
         </header>
@@ -79,12 +67,12 @@ export default function Dashboard() {
             />
             <div className="relative max-w-xl">
               <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
-                Turn today’s finds into tomorrow’s sales
+                Messy photo in, listing-ready banner out
               </h2>
               <p className="mt-2 text-sm leading-6 text-white/70">
-                Upload a messy snapshot, and Relight hands you back a listing-ready
-                banner with a believable shadow — in about two seconds, entirely on
-                your device.
+                Upload a snapshot, pick one of five output styles, and Relight hands
+                you back a clean banner with a believable shadow — in about two
+                seconds, entirely on your device.
               </p>
               <Button
                 size="lg"

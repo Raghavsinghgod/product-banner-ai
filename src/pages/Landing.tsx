@@ -91,12 +91,9 @@ function Nav() {
         </nav>
         <div className="flex items-center gap-2.5">
           <ThemeToggle />
-          <Button variant="ghost" size="sm" asChild className="hidden sm:inline-flex">
-            <Link to="/studio">Open studio</Link>
-          </Button>
           <Button size="sm" asChild>
-            <Link to="/auth">
-              Start free
+            <Link to="/studio">
+              Open studio
               <ArrowRight className="size-4" />
             </Link>
           </Button>
@@ -167,15 +164,15 @@ function Hero({
             className="mt-8 flex flex-wrap items-center gap-3"
           >
             <Button size="lg" asChild className="h-11 px-6 text-[15px] shadow-lg shadow-primary/20">
-              <Link to="/auth">
+              <Link to="/studio">
                 Clean your first photo
                 <ArrowRight className="size-4" />
               </Link>
             </Button>
             <Button size="lg" variant="outline" asChild className="h-11 px-6 text-[15px]">
-              <Link to="/studio">
+              <Link to="/dashboard">
                 <Upload className="size-4" />
-                Try the studio
+                See how it works
               </Link>
             </Button>
           </motion.div>
@@ -516,7 +513,7 @@ function FinalCta() {
           </p>
           <div className="relative mt-8 flex flex-wrap items-center justify-center gap-3">
             <Button size="lg" asChild className="h-11 bg-white px-6 text-[15px] text-[#0F1719] hover:bg-white/90">
-              <Link to="/auth">
+              <Link to="/studio">
                 Start free
                 <ArrowRight className="size-4" />
               </Link>
@@ -527,7 +524,7 @@ function FinalCta() {
               asChild
               className="h-11 border-white/25 bg-transparent px-6 text-[15px] text-white hover:bg-white/10 hover:text-white"
             >
-              <Link to="/studio">Open the studio</Link>
+              <Link to="/dashboard">See the workspace</Link>
             </Button>
           </div>
         </div>

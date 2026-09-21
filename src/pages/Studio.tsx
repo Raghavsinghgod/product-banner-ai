@@ -32,18 +32,16 @@ import {
   type StyleAnalysis,
 } from "@/lib/pipeline/styles";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@/hooks/use-auth";
 import {
   AlertTriangle,
   Download,
   ImageUp,
-  LogOut,
   RotateCcw,
   Sparkles,
   Wand2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link } from "react-router";
 
 type Stage = "empty" | "processing" | "ready" | "error";
 
@@ -57,9 +55,6 @@ const SHADOW_PRESETS: Array<{ id: string; label: string; opts: Partial<ShadowOpt
 ];
 
 export default function Studio() {
-  const { signOut } = useAuth();
-  const navigate = useNavigate();
-
   const [stage, setStage] = useState<Stage>("empty");
   const [fileName, setFileName] = useState<string | null>(null);
   const [beforeUrl, setBeforeUrl] = useState<string | null>(null);
@@ -239,11 +234,6 @@ export default function Studio() {
     setTimeout(() => runSegment(src.data.data, src.width, src.height, tolerance), 30);
   };
 
-  const handleSignOut = async () => {
-    await signOut();
-    navigate("/");
-  };
-
   // Pick one of the five output styles; the style drives backdrop + shadow
   // defaults, but everything stays tweakable afterwards.
   const applyStyle = (id: OutputStyleId) => {
@@ -280,15 +270,6 @@ export default function Studio() {
             <Button variant="outline" size="sm" onClick={reset}>
               <RotateCcw className="size-4" />
               New photo
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleSignOut}
-              className="hidden text-muted-foreground sm:inline-flex"
-            >
-              <LogOut className="size-4" />
-              Sign out
             </Button>
           </div>
         </div>
