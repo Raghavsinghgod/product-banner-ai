@@ -23,6 +23,7 @@
 // 180° = light from the left. Shadow is always cast AWAY from the light.
 
 import type { Cutout } from "./segment";
+import { boxBlur3, distanceInside, distanceOutside, mulberry32 } from "./pixels";
 
 export type ShadowOptions = {
   /** Light azimuth in degrees: 0 = from the right, 90 = from above. */
@@ -245,7 +246,8 @@ export function paintShadow(
 
 // ---- internals ---------------------------------------------------------------
 
-/** Add `w` coverage at (x+ox, y+oy) for every silhouette pixel. */
+/** Add `w` coverage at (x+ox, y+oy) for every silhouette pixel.
+ *  (src limits stamps to the pre-dilated ring — the area-light spread.) */
 function stampWeighted(
   src: Uint8Array,
   silList: number[],
@@ -268,7 +270,7 @@ function stampWeighted(
   }
 }
 
-/** 8-connected dilation by radius 1. */
+/** 8-connected dilation by radius 1 (the area-light grows as it travels). */
 function boxDilate8(src: Uint8Array, w: number, h: number): Uint8Array {
   const out = new Uint8Array(src.length);
   for (let y = 0; y < h; y++) {
@@ -295,100 +297,5 @@ function boxDilate8(src: Uint8Array, w: number, h: number): Uint8Array {
   return out;
 }
 
-/** Approximate Gaussian blur via 3 iterated separable box blurs. */
-function boxBlur3(
-  src: Float32Array,
-  w: number,
-  h: number,
-  r: number,
-): Float32Array {
-  let cur = src;
-  for (let pass = 0; pass < 3; pass++) {
-    cur = boxBlurOnce(cur, w, h, r);
-  }
-  return cur;
-}
-
-function boxBlurOnce(
-  src: Float32Array,
-  w: number,
-  h: number,
-  r: number,
-): Float32Array {
-  const tmp = new Float32Array(src.length);
-  const out = new Float32Array(src.length);
-  const norm = 1 / (2 * r + 1);
-  // horizontal
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    let sum = 0;
-    for (let x = -r; x <= r; x++) sum += src[row + Math.min(w - 1, Math.max(0, x))];
-    for (let x = 0; x < w; x++) {
-      tmp[row + x] = sum * norm;
-      const add = Math.min(w - 1, x + r + 1);
-      const sub = Math.max(0, x - r);
-      sum += src[row + add] - src[row + sub];
-    }
-  }
-  // vertical
-  for (let x = 0; x < w; x++) {
-    let sum = 0;
-    for (let y = -r; y <= r; y++) sum += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
-    for (let y = 0; y < h; y++) {
-      out[y * w + x] = sum * norm;
-      const add = Math.min(h - 1, y + r + 1);
-      const sub = Math.max(0, y - r);
-      sum += tmp[add * w + x] - tmp[sub * w + x];
-    }
-  }
-  return out;
-}
-
-function distanceInside(bin: Uint8Array, w: number, h: number): Float32Array {
-  const INF = 1e9;
-  const d = new Float32Array(bin.length);
-  for (let i = 0; i < bin.length; i++) d[i] = bin[i] ? INF : 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      if (!bin[i]) continue;
-      let m = d[i];
-      if (x > 0) m = Math.min(m, d[i - 1] + 3);
-      if (y > 0) m = Math.min(m, d[i - w] + 3);
-      if (x > 0 && y > 0) m = Math.min(m, d[i - w - 1] + 4);
-      if (x < w - 1 && y > 0) m = Math.min(m, d[i - w + 1] + 4);
-      d[i] = m;
-    }
-  }
-  for (let y = h - 1; y >= 0; y--) {
-    for (let x = w - 1; x >= 0; x--) {
-      const i = y * w + x;
-      if (!bin[i]) continue;
-      let m = d[i];
-      if (x < w - 1) m = Math.min(m, d[i + 1] + 3);
-      if (y < h - 1) m = Math.min(m, d[i + w] + 3);
-      if (x < w - 1 && y < h - 1) m = Math.min(m, d[i + w + 1] + 4);
-      if (x > 0 && y < h - 1) m = Math.min(m, d[i + w - 1] + 4);
-      d[i] = m;
-    }
-  }
-  for (let i = 0; i < bin.length; i++) d[i] /= 3;
-  return d;
-}
-
-function distanceOutside(bin: Uint8Array, w: number, h: number): Float32Array {
-  const inv = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) inv[i] = bin[i] ? 0 : 1;
-  return distanceInside(inv, w, h);
-}
-
-function mulberry32(seed: number) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+// (blur + distance-transform + PRNG helpers live in ./pixels — shared with
+//  segment.ts and upscale.ts so the tuning stays consistent across engines.)

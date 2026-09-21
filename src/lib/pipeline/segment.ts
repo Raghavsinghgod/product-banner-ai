@@ -1,26 +1,29 @@
-// Custom product cutout engine — 100% our own code, no external AI APIs.
+// Custom product cutout engine — the custom-math fallback + refinement stage
+// for the AI matting pipeline (see aiMatting.ts for the primary model).
 //
-// Professional-grade rewrite. The old engine used a single fixed-threshold
-// flood fill, which leaked through low-contrast edges and ate soft shadows.
-// This version runs a proper multi-stage segmentation pipeline:
+// DATA FLOW (one `segmentPass` call):
 //
-//   1. Border sampling + k-means background color model (handles multi-tone
-//      and gradient backdrops that a single threshold cannot represent).
-//   2. Model-guided flood fill from the borders: a pixel joins the background
-//      when it is close to ANY background cluster (Mahalanobis-style weighted
-//      distance in RGB), with edge-stopping damped by a Sobel gradient map so
-//      fills never run across real product contours.
-//   3. Foreground cleanup: connected-component analysis keeps only components
-//      that are plausibly the product (size, contact with fill boundary),
-//      then morphological open/close + hole filling.
-//   4. Signed-distance alpha matting: alpha ramps smoothly across the contour
-//      using the signed distance field (negative inside, positive outside),
-//      plus edge-aware color decontamination so halo pixels don't tint the
-//      composite.
-//   5. Auto-retry: if the first pass clearly fails (no product, or everything
-//      is product), the tolerance is adapted and the pipeline re-runs.
-//   6. A calibrated confidence score (0..1) derived from model separation,
-//      contour edge strength, and boundary regularity — surfaced in the UI.
+//   rgba in
+//     │
+//     ├─ Stage 1  sobel() ──────────────► edge map (Float32 per pixel)
+//     ├─ Stage 1  border ring ─► kmeans ► bg color model (≤4 clusters + scale)
+//     │
+//     ├─ Stage 2  flood fill from borders, guided by the color model and
+//     │           damped near strong edges → "flood" binary (bg = 1)
+//     │
+//     ├─ Stage 3  invert → contour shave → open → components → RANK
+//     │           (score = size + centrality + non-border) → close → fill holes
+//     │           → "filled" binary (fg = 1) + ranked candidates
+//     │
+//     ├─ Stage 4  signedDistance(filled) → adaptive alpha ramp + two-sided
+//     │           edge decontamination (unmix bg/product colors) → RGBA out
+//     │
+//     └─ Stage 5  confidence = 0.35·separation + 0.30·edge support
+//                           + 0.20·model distance + 0.15·compactness
+//
+// `segment()` (public API) wraps segmentPass with auto-retry: it detects the
+// classic failure modes (whole-frame leak, nothing found, low confidence) and
+// re-runs with adapted tolerance, keeping the best pass.
 
 /** A candidate object the detector found, ranked by product-likelihood. */
 export type DetectedObject = {
@@ -30,11 +33,16 @@ export type DetectedObject = {
   score: number;
 };
 
+/** The pipeline's output: source pixels + soft alpha + detection metadata. */
 export type Cutout = {
-  alpha: Uint8ClampedArray; // RGBA, RGB = source color (decontaminated), A = alpha (0..255)
+  /** RGBA at source size: RGB = decontaminated source color, A = matte. */
+  alpha: Uint8ClampedArray;
   width: number;
   height: number;
+  /** Pixels in the soft (partial-alpha) transition band. */
   softPixels: number;
+  /** Frame edges (1=left,2=top,3=right,4=bottom) the fill reached —
+   *  non-empty means the product may be clipped by the photo border. */
   touchedEdges: Set<number>;
   /** Bounding box of the PRIMARY object (clutter is excluded from framing). */
   box: { x: number; y: number; w: number; h: number };
@@ -51,11 +59,20 @@ export type SegmentOptions = {
   noRetry?: boolean;
 };
 
-const clamp255 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
+import { clamp255 } from "./pixels";
 
 // ---------------------------------------------------------------- utilities
 
-/** Compact RGB k-means with k-means++-style spreading init. */
+/**
+ * Compact RGB k-means over packed 0xRRGGBB samples (a Uint32Array with `count`
+ * valid entries — typed arrays keep the hot path free of boxed doubles).
+ *
+ * Init: luminance-quantile seeding — a cheap k-means++ stand-in that spreads
+ * centers across the tonal range instead of letting them cluster.
+ * Runs at most `iters` Lloyd iterations, early-exits when assignments stop
+ * moving. Used ONLY for the background model (Stage 1) and palette extraction
+ * in styles.ts; not a general-purpose clusterer.
+ */
 function kmeans(
   count: number,
   samples: Uint32Array, // packed rgb (r<<16|g<<8|b), first `count` entries valid
@@ -133,10 +150,12 @@ function unpackPacked(s: number): [number, number, number] {
   return [(s >> 16) & 255, (s >> 8) & 255, s & 255];
 }
 
-/** Weighted distance from a pixel to the nearest background cluster center.
- *  The per-channel scale (from cluster variance) makes dark and light
- *  backdrops equally tractable — plain L-infinity under-weights color axes
- *  that happen to be tight. */
+/**
+ * Weighted distance from a pixel to the nearest background cluster center.
+ * The per-axis scale (derived from cluster spread) makes dark and light
+ * backdrops equally tractable — plain Euclidean under-weights color axes
+ * that happen to be tight, causing leaks on saturated backdrops.
+ */
 function bgDistance(
   r: number,
   g: number,
@@ -155,7 +174,10 @@ function bgDistance(
   return best;
 }
 
-/** Sobel gradient magnitude on the luminance channel. */
+/**
+ * Sobel gradient magnitude on the luminance channel (0..255 per pixel).
+ * Border pixels are left 0 — the flood seeds on the frame anyway.
+ */
 function sobel(rgba: Uint8ClampedArray, w: number, h: number): Float32Array {
   const n = w * h;
   const lum = new Float32Array(n);
@@ -385,6 +407,12 @@ function segmentPass(
   const n = width * height;
 
   // ---- Stage 1: edge map + background color model -------------------------
+  // Edges: Sobel magnitude — used BOTH to stop the flood (Stage 2) and later
+  // to sharpen the alpha ramp where the contour is high-contrast (Stage 4).
+  // Background model: sample a ring just inside the frame (product photos
+  // nearly always show clear backdrop at the borders), k-means into ≤4
+  // clusters. Multi-cluster handles walls+desk seams and gradients that a
+  // single threshold cannot represent.
   const edge = sobel(rgba, width, height);
   const EDGE_STRONG = 60;
 
@@ -446,6 +474,11 @@ function segmentPass(
   }
 
   // ---- Stage 2: model-guided, edge-stopped flood from the borders ---------
+  // BFS from border seeds. A neighbor joins the background when its color is
+  // close enough to ANY cluster (`cutoff` = tolerance/12, i.e. ~2.2σ at the
+  // default 26) AND the Sobel edge under it is weak. Near edges the threshold
+  // is damped (edgeDamp) so the fill never crosses a product contour — this
+  // is what keeps dark products on dark desks separable.
   const flood = new Uint8Array(n);
   const stack = new Int32Array(n);
   let sp = 0;
@@ -607,6 +640,11 @@ function segmentPass(
   const filled = fillHoles(closedPair, width, height);
 
   // ---- Stage 4: signed-distance alpha matting + decontamination ----------
+  // Alpha ramps smoothly across the contour: the signed distance field is
+  // negative inside / positive outside, and the band half-width adapts to
+  // edge strength (strong edge = tight ±1px mat, soft edge = ±2.5px). Edge
+  // band pixels are DECONTAMINATED: their color is unmixed off the
+  // bg→product line so neither dark nor light environment fringes survive.
   const alpha = new Uint8ClampedArray(n * 4);
   let softPixels = 0;
   const sd = signedDistance(filled, width, height);
