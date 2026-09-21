@@ -10,7 +10,6 @@ import {
   autoPlacement,
   BACKDROPS,
   drawBackdrop,
-  drawBanner,
   drawProduct,
   exportBanner,
   getRatio,
@@ -20,7 +19,7 @@ import {
   type RatioId,
 } from "@/lib/pipeline/banner";
 import { getDemoBefore } from "@/lib/pipeline/demo";
-import { paintShadow, renderShadow } from "@/lib/pipeline/shadow";
+import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
 import type { Cutout } from "@/lib/pipeline/segment";
 import { DEFAULT_SHADOW, type ShadowOptions } from "@/lib/pipeline/shadow";
@@ -174,6 +173,14 @@ export default function Studio() {
   }, [tolerance]);
 
   // ---- render loop -------------------------------------------------------
+  // Shadow geometry (coverage sweep + filtering) is cached per cutout/placement
+  // and only recomputed when geometry-affecting params change. The strength
+  // (opacity) slider and the contact toggle re-tone-map from the cached
+  // intensity field — nearly free, so the slider stays buttery.
+  const shadowCacheRef = useRef<{
+    key: string;
+    intensity: Float32Array;
+  } | null>(null);
   useEffect(() => {
     if (stage !== "ready" || !cutoutRef.current) return;
     let raf = 0;
@@ -196,8 +203,24 @@ export default function Studio() {
         ctx.clearRect(0, 0, r.w, r.h);
         drawBackdrop(ctx, r.w, r.h, backdrop);
         if (shadowsOn) {
-          const mask = renderShadow(cutout, place, r.w, r.h, shadow);
+          const geoKey = [
+            cutoutTick,
+            ratio,
+            size,
+            height,
+            shadow.direction,
+            shadow.length,
+            shadow.softness,
+          ].join("|");
+          let intensity = shadowCacheRef.current?.intensity;
+          if (!shadowCacheRef.current || shadowCacheRef.current.key !== geoKey) {
+            intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
+            shadowCacheRef.current = { key: geoKey, intensity };
+          }
+          const mask = toneMapShadow(intensity!, r.w, r.h, shadow);
           paintShadow(ctx, mask, r.w, r.h);
+        } else {
+          shadowCacheRef.current = null;
         }
         drawProduct(ctx, cutout, place);
         setAfterUrl(out.toDataURL("image/png"));

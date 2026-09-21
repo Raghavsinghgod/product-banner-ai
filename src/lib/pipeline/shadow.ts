@@ -45,17 +45,44 @@ export const DEFAULT_SHADOW: ShadowOptions = {
   contact: true,
 };
 
-/** Build the shadow layer as an alpha mask the same size as the banner canvas. */
-export function renderShadow(
-  cutout: Cutout,
-  place: { x: number; y: number; scale: number },
+/**
+ * Geometry-independent tone mapping: applies opacity + gamma to a normalized
+ * shadow intensity buffer. Split out so the Studio can re-render the strength
+ * slider without recomputing the (expensive) coverage/filtering stages.
+ */
+export function toneMapShadow(
+  intensity: Float32Array,
   canvasW: number,
   canvasH: number,
   opts: ShadowOptions,
 ): Uint8ClampedArray {
   const n = canvasW * canvasH;
   const mask = new Uint8ClampedArray(n);
+  const op = Math.max(0, Math.min(1, opts.opacity));
+  for (let i = 0; i < n; i++) {
+    let v = intensity[i] * op;
+    if (v > 0) {
+      v = Math.pow(Math.min(1, v), 1.15);
+      mask[i] = Math.round(v * 255);
+    }
+  }
+  return mask;
+}
 
+/**
+ * Compute the normalized shadow intensity field (0..1 per pixel) — all the
+ * expensive geometry work (coverage sweep, filtering, AO) but NOT the final
+ * opacity/gamma tone mapping. Pair with toneMapShadow for cheap re-renders.
+ */
+export function renderShadowIntensity(
+  cutout: Cutout,
+  place: { x: number; y: number; scale: number },
+  canvasW: number,
+  canvasH: number,
+  opts: ShadowOptions,
+): Float32Array {
+  const n = canvasW * canvasH;
+  const intensity = new Float32Array(n);
   // ---- rasterize the product silhouette (binary) at placement -------------
   const sil = new Uint8Array(n);
   const { alpha, width: cw, height: ch, box } = cutout;
@@ -81,7 +108,7 @@ export function renderShadow(
       }
     }
   }
-  if (silList.length === 0) return mask;
+  if (silList.length === 0) return intensity;
 
   const longest = Math.max(box.w, box.h) * place.scale;
 
@@ -168,17 +195,27 @@ export function renderShadow(
     }
   }
 
-  // ---- 4. composite + tone map ---------------------------------------------
-  const op = Math.max(0, Math.min(1, opts.opacity));
+  // ---- 4. composite: normalize intensity (tone-mapping is a separate step) -
   for (let i = 0; i < n; i++) {
-    let v = Math.max(castSoft[i] * op, ao[i]);
-    if (v > 0) {
-      v = Math.pow(Math.min(1, v), 1.15); // keep cores rich, tails natural
-      mask[i] = Math.round(v * 255);
-    }
+    intensity[i] = Math.max(castSoft[i], ao[i]);
   }
 
-  return mask;
+  return intensity;
+}
+
+/**
+ * One-shot convenience: intensity + tone mapping in a single call. The Studio
+ * uses the split API (renderShadowIntensity + toneMapShadow) so the strength
+ * slider only redoes the cheap tone-mapping step.
+ */
+export function renderShadow(
+  cutout: Cutout,
+  place: { x: number; y: number; scale: number },
+  canvasW: number,
+  canvasH: number,
+  opts: ShadowOptions,
+): Uint8ClampedArray {
+  return toneMapShadow(renderShadowIntensity(cutout, place, canvasW, canvasH, opts), canvasW, canvasH, opts);
 }
 
 /** Paint the shadow mask onto a destination context as black pixels with alpha. */

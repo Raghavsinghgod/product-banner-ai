@@ -4,7 +4,13 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Cutout } from "../src/lib/pipeline/segment";
-import { renderShadow, DEFAULT_SHADOW, type ShadowOptions } from "../src/lib/pipeline/shadow";
+import {
+  renderShadow,
+  renderShadowIntensity,
+  toneMapShadow,
+  DEFAULT_SHADOW,
+  type ShadowOptions,
+} from "../src/lib/pipeline/shadow";
 
 const W = 240;
 const H = 240;
@@ -146,6 +152,19 @@ describe("shadow engine physics", () => {
     const a = renderShadow(rectCutout(), place(), W, H, DEFAULT_SHADOW);
     const b = renderShadow(rectCutout(), place(), W, H, DEFAULT_SHADOW);
     for (let i = 0; i < a.length; i++) expect(a[i]).toBe(b[i]);
+  });
+
+  test("split API: toneMapShadow(intensity) equals renderShadow one-shot", () => {
+    const intensity = renderShadowIntensity(rectCutout(), place(), W, H, DEFAULT_SHADOW);
+    const split = toneMapShadow(intensity, W, H, DEFAULT_SHADOW);
+    const oneShot = renderShadow(rectCutout(), place(), W, H, DEFAULT_SHADOW);
+    expect(Array.from(split)).toEqual(Array.from(oneShot));
+  });
+
+  test("split API: intensity is opacity-independent (strength slider is free)", () => {
+    const a = renderShadowIntensity(rectCutout(), place(), W, H, { ...base, opacity: 0.2 });
+    const b = renderShadowIntensity(rectCutout(), place(), W, H, { ...base, opacity: 0.8 });
+    expect(Array.from(a)).toEqual(Array.from(b));
   });
 
   test("off-canvas placement is safe (no crash, empty mask)", () => {
