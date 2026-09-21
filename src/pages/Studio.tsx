@@ -21,6 +21,7 @@ import {
 import { getDemoBefore } from "@/lib/pipeline/demo";
 import { generateDesign, paintDesign, randomSeed, type GeneratedDesign } from "@/lib/pipeline/design";
 import { upscaleImage } from "@/lib/pipeline/upscale";
+import { aiMatte, matteToCutout } from "@/lib/pipeline/aiMatting";
 import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
 import type { Cutout } from "@/lib/pipeline/segment";
@@ -84,6 +85,8 @@ export default function Studio() {
   /** Active generative design (null = use the fixed backdrop picker). */
   const [design, setDesign] = useState<GeneratedDesign | null>(null);
   const [designSeed, setDesignSeed] = useState<number | null>(null);
+  /** AI matting model state (BiRefNet on-device). */
+  const [aiState, setAiState] = useState<"unloaded" | "loading" | "ready" | "failed">("unloaded");
 
   const cutoutRef = useRef<Cutout | null>(null);
   const sourceRef = useRef<{ data: ImageData; width: number; height: number } | null>(null);
@@ -151,13 +154,52 @@ export default function Studio() {
 
     // give the UI a frame to show the processing state
     await new Promise((r) => setTimeout(r, 30));
-    runSegment(data.data, w, h, tolerance);
+    // The AI model needs a bitmap of the FINAL (possibly upscaled) pixels.
+    // If we upscaled, bitmap dims differ from data dims — re-draw at final size.
+    let modelBmp: ImageBitmap = bitmap;
+    if (bitmap.width !== w || bitmap.height !== h) {
+      const bcv = document.createElement("canvas");
+      bcv.width = w;
+      bcv.height = h;
+      bcv.getContext("2d")!.putImageData(data, 0, 0);
+      modelBmp = await createImageBitmap(bcv);
+    }
+    await runSegment(data.data, w, h, tolerance, modelBmp);
   };
 
-  // ---- segmentation (async — runs in a worker when available) ------------
-  const runSegment = async (rgba: Uint8ClampedArray, w: number, h: number, tol: number) => {
+  // ---- segmentation: AI matting first (BiRefNet, MIT), custom engine as
+  // refinement + fallback. The AI mask handles complex scenes (product close
+  // in color to the background, clutter) that defeat color models.
+  const runSegment = async (rgba: Uint8ClampedArray, w: number, h: number, tol: number, bitmap?: ImageBitmap) => {
+    setAiState("loading");
     try {
-      const cutout = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
+      let cutout: Cutout | null = null;
+
+      // 1) AI matte (needs the bitmap at the same size as rgba)
+      if (bitmap) {
+        try {
+          const matte = await aiMatte(bitmap);
+          if (matte) {
+            cutout = matteToCutout(
+              new ImageData(new Uint8ClampedArray(rgba), w, h),
+              matte,
+            );
+            setAiState("ready");
+          } else {
+            setAiState("failed");
+          }
+        } catch {
+          setAiState("failed");
+        }
+      } else {
+        setAiState("failed");
+      }
+
+      // 2) fallback / refinement: custom engine
+      if (!cutout) {
+        cutout = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
+      }
+
       const { box } = cutout;
       cutoutRef.current = cutout;
       setConfidence(cutout.confidence);
@@ -209,8 +251,9 @@ export default function Studio() {
       const data = ctx.getImageData(0, 0, cv.width, cv.height);
       sourceRef.current = { data, width: cv.width, height: cv.height };
       setBeforeUrl(url);
+      const sampleBmp = await createImageBitmap(cv);
       await new Promise((r) => setTimeout(r, 30));
-      runSegment(data.data, cv.width, cv.height, tolerance);
+      runSegment(data.data, cv.width, cv.height, tolerance, sampleBmp);
     } catch (err) {
       console.error(err);
       setStage("error");
@@ -434,6 +477,21 @@ export default function Studio() {
         Skip to controls
       </a>
       {/* polite live region: announces processing/result status to screen readers */}
+      {/* AI engine status chip (visible while first model load runs) */}
+      {aiState === "loading" && (
+        <div className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-full border border-border/60 bg-card/95 px-4 py-2 text-xs font-medium shadow-lg backdrop-blur">
+          <span className="relative flex size-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+            <span className="relative inline-flex size-2 rounded-full bg-primary" />
+          </span>
+          Loading AI cutout engine (first run downloads ~60 MB, then cached)
+        </div>
+      )}
+      {aiState === "failed" && (
+        <div className="fixed bottom-4 left-4 z-50 rounded-full border border-[#F4B23E]/40 bg-[#F4B23E]/10 px-4 py-2 text-xs font-medium text-[#7a5a14] shadow-lg">
+          AI engine unavailable — using on-device color-model cutout
+        </div>
+      )}
       <p aria-live="polite" className="sr-only">
         {stage === "processing" && "Processing photo: finding your product."}
         {stage === "ready" &&
