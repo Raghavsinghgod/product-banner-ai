@@ -1,7 +1,12 @@
-// Web Worker entry for the segmentation pipeline. Runs the full professional
-// engine (color model -> guided flood -> cleanup -> matting) off the main
-// thread so the UI never blocks during processing.
-import { segment } from "./segment";
+// Web Worker entry for the custom segmentation engine.
+//
+// Runs off the main thread so the UI never blocks during processing.
+// PROTOCOL: main thread posts { id, buffer, width, height, tolerance, ... }
+// with the RGBA ArrayBuffer TRANSFERRED (zero-copy, ownership moves here);
+// we post back { id, ok, alpha: ArrayBuffer (transferred back), box,
+// candidates, confidence, ... }. The id matches request to response in
+// segmentClient.ts's pending map. If the worker crashes, the client
+// permanently falls back to synchronous execution.
 
 type SegRequest = {
   id: number;

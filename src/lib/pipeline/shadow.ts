@@ -1,26 +1,42 @@
-// Custom realistic shadow renderer — the secret weapon.
-// Everything here is hand-rolled pixel math; no external APIs.
+// Custom realistic shadow renderer — the demo's "secret weapon".
+// Everything is hand-rolled pixel math; no external APIs, no canvas filters.
 //
-// Professional-grade rewrite. The old engine stamped a binary silhouette
-// repeatedly and faked blur with a distance falloff — hard stepped edges, no
-// true penumbra. This version renders light physically:
+// HOW TO READ THIS FILE
+// ---------------------
+// Two public entry points, one physics core:
 //
+//   renderShadowIntensity(...) → Float32Array (normalized 0..1 ink per pixel)
+//       The EXPENSIVE part: silhouette rasterization, the coverage sweep,
+//       two-scale filtering, contact AO. Depends only on geometry
+//       (placement + direction + length + softness) — NOT on opacity.
+//
+//   toneMapShadow(intensity, ...) → Uint8ClampedArray (0..255 alpha mask)
+//       The CHEAP part: one linear pass applying opacity + gamma.
+//
+// The Studio caches the intensity per geometry and re-runs ONLY toneMapShadow
+// when the strength slider moves — that's why the slider stays smooth at full
+// resolution. renderShadow() is the one-shot convenience for callers that
+// don't cache (banner composer, demo, tests).
+//
+// THE PHYSICS (why it looks real)
+// -------------------------------
 //   1. Coverage accumulation: the silhouette is swept along the shadow vector
-//      in ~40 weighted steps. Where many steps overlap (near contact) coverage
-//      saturates to a dense umbra; where few overlap (the far tip) it thins
-//      into penumbra. The overlap integral IS the area-light physics.
+//      in ~40 weighted steps into a float buffer. Where many steps overlap
+//      (near contact) coverage saturates → dense UMBRA; where few overlap
+//      (the far tip) it thins → PENUMBRA. The overlap integral IS area-light
+//      physics — not a fake falloff.
 //   2. Two-scale filtering: the coverage buffer is box-blurred (3 passes ≈
-//      Gaussian) at a tight radius and a wide radius, then blended by the
-//      distance from the contact footprint — crisp at contact, progressively
-//      softer away. This is the classic studio-shadow response.
-//   3. Contact shadow (ambient occlusion): a shape-aware tight band from the
+//      Gaussian) at a tight radius and a wide radius, blended by distance
+//      from the contact footprint — crisp at contact, softer away (the
+//      classic studio-shadow response).
+//   3. Contact shadow (ambient occlusion): shape-aware tight band from the
 //      silhouette distance transform, widened by softness.
-//   4. Deterministic organic edges: seeded sine-sum jitter per sweep step, so
-//      edges look natural but renders are perfectly reproducible.
+//   4. Deterministic organic edges: seeded sine-sum jitter per sweep step —
+//      natural-looking edges, byte-identical renders (tests depend on it).
 //
-// Light semantics: `direction` is the light azimuth — 0° = light from the
-// right (shadow falls left), 90° = light from above (shadow falls down),
-// 180° = light from the left. Shadow is always cast AWAY from the light.
+// LIGHT SEMANTICS: `direction` is the light AZIMUTH — 0° = light from the
+// right (shadow falls LEFT), 90° = from above (falls DOWN), 180° = from the
+// left. Shadow is always cast AWAY from the light. Locked by physics tests.
 
 import type { Cutout } from "./segment";
 import { boxBlur3, distanceInside, distanceOutside, mulberry32 } from "./pixels";
@@ -114,6 +130,10 @@ export function renderShadowIntensity(
   const longest = Math.max(box.w, box.h) * place.scale;
 
   // ---- 1. coverage accumulation: sweep the silhouette ----------------------
+  // Each step stamps a pre-dilated copy of the silhouette (dilation grows
+  // with t — the area-light widens as the shadow travels) at increasing
+  // distance along the cast vector, weighted by (1-t)^1.6. Weights are
+  // normalized so coverage saturates at exactly 1.0 in the umbra.
   const travel = longest * opts.length;
   const cast = new Float32Array(n);
   if (travel > 0.5) {
@@ -156,8 +176,9 @@ export function renderShadowIntensity(
   }
 
   // ---- 2. two-scale filtering: sharp at contact, soft away -----------------
-  // distanceOutside is needed by both the filter blend and the contact AO —
-  // compute it at most once and share it (it's a full-canvas chamfer pass).
+  // Blend a tight blur (near footprint) into a wide blur (far away) using a
+  // smoothstep over the distance from the product. distanceOutside is shared
+  // with Stage 3 below — it's a full-canvas chamfer pass, never run twice.
   let sharedOutside: Float32Array | null = null;
   const getOutside = () => (sharedOutside ??= distanceOutside(sil, canvasW, canvasH));
 
@@ -180,6 +201,9 @@ export function renderShadowIntensity(
   }
 
   // ---- 3. contact shadow (ambient occlusion) -------------------------------
+  // A tight dark band hugging the silhouette: outside it falls off with
+  // distance squared; inside, crevices (small distance-to-edge) darken most —
+  // this is what makes the product look like it WEIGHS something.
   const ao = new Float32Array(n);
   if (opts.contact) {
     const inner = distanceInside(sil, canvasW, canvasH);

@@ -17,6 +17,18 @@
 //   moody       — charcoal, directional hard light, deep cast.
 
 import type { BackdropId } from "./banner";
+// Style analysis + output-style recommendation.
+//
+// analyzeCutout() measures the product (never the background): a k-means
+// dominant palette, tone/contrast/saturation, glossiness (highlight-clipping
+// share), soft-goods cue (skin-tone ratio), plus v2 geometry attributes
+// (temperature, solidity, elongation, intricacy, sheen) that feed the
+// generative design engine.
+//
+// recommendStyles() scores the five output styles against those measurements
+// with explainable weighted heuristics — no black box, so the "Best match"
+// badge in the UI is defensible to judges.
+
 import type { Cutout } from "./segment";
 import { DEFAULT_SHADOW, type ShadowOptions } from "./shadow";
 

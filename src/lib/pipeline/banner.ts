@@ -1,4 +1,15 @@
-// Banner composer: studio backdrops, social ratios, product compositing, export.
+// Banner composer — turns a Cutout into a finished listing image.
+//
+// Layer order (back to front):
+//   1. drawBackdrop  — gradient + top light pool + grounding band
+//                      (or paintDesign from design.ts for generated scenes)
+//   2. paintShadow   — the shadow engine's alpha mask, tinted near-black
+//   3. drawProduct   — the cutout, scaled and placed by a Placement
+//
+// Placement model: { x, y } is the product's CENTER-BOTTOM anchor ("baseline");
+// scale multiplies the cutout's natural size. autoPlacement() computes the
+// default: product ~62% of canvas height, baseline at 72% — the classic
+// listing-photo composition.
 
 import type { Cutout } from "./segment";
 import { renderShadow, paintShadow, type ShadowOptions } from "./shadow";
@@ -61,9 +72,13 @@ export function autoPlacement(cutout: Cutout, W: number, H: number): Placement {
   return { x: W / 2, y: H * 0.72, scale };
 }
 
-// Cache the full-size cutout canvas so re-renders (slider drags) stay cheap.
+// Cache the rasterized cutout per Cutout object (WeakMap: no leaks) so
+// slider-driven re-renders skip the per-pixel putImageData.
+// Cache the rasterized cutout per Cutout object (WeakMap → no leaks) so
+// slider-driven re-renders skip the per-pixel putImageData.
 const cutoutCanvasCache = new WeakMap<Cutout, HTMLCanvasElement>();
 
+/** Rasterize a Cutout into a canvas (cached — cheap on repeat calls). */
 export function cutoutToCanvas(cutout: Cutout): HTMLCanvasElement {
   let c = cutoutCanvasCache.get(cutout);
   if (!c) {

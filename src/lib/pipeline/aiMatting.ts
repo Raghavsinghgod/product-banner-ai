@@ -1,16 +1,23 @@
-// AI matting stage — BiRefNet (MIT license) running fully on-device via
-// Transformers.js + ONNX Runtime Web.
+// AI matting stage — the PRIMARY cutout engine.
 //
-// Why: color-model segmentation (our custom engine) fails on complex scenes
-// (product similar in color to the background, cluttered desks). BiRefNet is
-// purpose-built for Dichotomous Image Segmentation — high-resolution salient
-// object matting — and is MIT licensed (model by ZhengPeng7 et al., ONNX
-// conversion by onnx-community). The ~56MB quantized weights stream from the
-// Hugging Face CDN on first use, then live in the browser cache.
+// MODEL: BiRefNet_lite (MIT license — ZhengPeng7 et al.; ONNX conversion by
+// onnx-community) via Transformers.js on ONNX Runtime Web (WASM/WebGPU).
+// BiRefNet is built for Dichotomous Image Segmentation: high-resolution
+// salient-object matting. It succeeds exactly where our custom color-model
+// engine fails — product colored like the background (laptop on grass),
+// cluttered scenes, soft edges.
 //
-// This module is intentionally lazy: the model is only downloaded when the
-// user first processes a photo, and callers get a Promise they can await or
-// ignore (the custom pipeline remains the fallback).
+// PRIVACY + COST: inference runs fully in the browser. Weights (~56MB fp32)
+// stream from the Hugging Face CDN on first use and are cached by the browser
+// afterwards. No uploads, no API keys, no per-image cost.
+//
+// FALLBACK: every failure path (model load failure, inference error) resolves
+// to null and the caller re-runs the custom segment.ts engine — the app never
+// breaks because the model can't load.
+//
+// LIFECYCLE: the pipeline is created lazily on the first photo and shared for
+// the session (module-level promise). Callers show a loading chip while the
+// first download runs.
 
 import type { Cutout } from "./segment";
 

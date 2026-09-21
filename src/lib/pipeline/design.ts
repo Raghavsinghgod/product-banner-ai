@@ -1,11 +1,17 @@
-// Generative design engine — every render can be a unique, coherent studio
-// scene. 100% procedural: seeded PRNG drives palette harmony, light geometry,
-// surface texture, and composition, all constrained by the product analysis
-// so the design always flatters the product. Same seed -> same design (so a
-// look you love is reproducible); new seed -> a genuinely different design.
+// Generative design engine — a unique, coherent studio scene on demand.
 //
-// All drawing happens on a 2D canvas at banner resolution; the compositor
-// draws this behind the cutout instead of a fixed gradient backdrop.
+// HOW UNIQUENESS WORKS: a seed drives a mulberry32 PRNG that picks the scene's
+// specifics (palette family, light angle, shapes, floor, grain) — while
+// HARMONY RULES (not randomness) constrain how those choices relate to the
+// product: the backdrop hue is derived from the product's dominant color via
+// analogous/complement/neutral strategies, so every random design still
+// flatters the product. Consequences:
+//
+//   same seed  → byte-identical design (the "Replay this exact design" button)
+//   new seed   → a genuinely different, never-repeated look
+//
+// paintDesign() draws at banner resolution on a 2D canvas; the compositor
+// renders it behind the cutout in place of a fixed backdrop gradient.
 
 import type { StyleAnalysis } from "./styles";
 

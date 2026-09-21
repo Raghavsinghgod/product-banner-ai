@@ -529,7 +529,11 @@ function segmentPass(
     if (sp >= n) break;
   }
 
-  // ---- Stage 3: cleanup — shave, opening, components, closing, holes -----
+  // ---- Stage 3: cleanup — shave, opening, components, ranking, holes ------
+  // Invert the flood: unreached pixels = foreground candidates. The flood
+  // leaves a 1–2px blend band on every contour (Sobel spans two pixels at a
+  // step edge), so: contour shave → opening → component ranking → closing →
+  // hole fill. See the candidate-ranking block below for the scoring model.
   const fg0 = new Uint8Array(n);
   for (let i = 0; i < n; i++) fg0[i] = flood[i] ? 0 : 1;
 
@@ -741,9 +745,17 @@ function segmentPass(
   }
 
   // ---- confidence ---------------------------------------------------------
-  // 1. raw separation: literal RGB distance of foreground pixels from the bg
-  //    model (unnormalized) — the single best quality signal. A product 180
-  //    levels from the backdrop is unambiguous; 36 levels is not.
+  // A calibrated 0..1 quality score surfaced in the UI (green/amber/red).
+  // Four weighted signals, chosen so a clean studio shot scores ~0.95+ and an
+  // ambiguous low-contrast scene drops below 0.5:
+  //   rawSep (35%)   — literal RGB distance of fg pixels from the bg model.
+  //                    The single best signal: a product 180 levels from the
+  //                    backdrop is unambiguous; 36 levels is not.
+  //   edgeSup (30%)  — share of boundary pixels sitting on a strong Sobel
+  //                    gradient (did we land on the REAL contour?).
+  //   separ. (20%)   — normalized model distance (secondary to rawSep).
+  //   compact (15%)  — 4πA/P² shape regularity; blob-like cuts score higher
+  //                    than ragged, leaky boundaries.
   let sepSum = 0;
   let sepCount = 0;
   for (let i = 0; i < n; i += 7) {
@@ -847,6 +859,18 @@ function segmentPass(
 
 // ---------------------------------------------------------------- public API
 
+/**
+ * Segment with auto-retry. Runs one pass, detects classic failure modes, and
+ * re-runs with adapted tolerance when the evidence says the first pass lost:
+ *
+ *   A. whole-frame leak (box ≈ frame)      → retry much tighter (×0.55)
+ *   B. nothing found (area < 0.5%)         → retry much looser (×1.8)
+ *   C. low confidence (< 0.35)             → try BOTH directions, keep best
+ *
+ * Each retry keeps the better pass by confidence, so the function can only
+ * improve on the first attempt. `noRetry` skips everything (used by tests and
+ * the internal refinement path where the caller controls tolerance).
+ */
 export function segment(
   rgba: Uint8ClampedArray,
   width: number,
