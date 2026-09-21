@@ -36,6 +36,7 @@ import {
   AlertTriangle,
   Download,
   ImageUp,
+  Layers,
   MoveHorizontal,
   RotateCcw,
   Sparkles,
@@ -298,6 +299,74 @@ export default function Studio() {
       p.opts.softness === shadow.softness &&
       p.opts.opacity === shadow.opacity,
   );
+
+  // Render the current look at full export resolution (no JPEG preview
+  // artifacts) onto the main canvas.
+  const renderFullQuality = () => {
+    const cutout = cutoutRef.current;
+    const canvas = canvasRef.current;
+    if (!cutout || !canvas) return null;
+    const r = getRatio(ratio);
+    canvas.width = r.w;
+    canvas.height = r.h;
+    const ctx = canvas.getContext("2d")!;
+    const base = autoPlacement(cutout, r.w, r.h);
+    const place: Placement = {
+      x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
+      y: (height / 100) * r.h,
+      scale: base.scale * (size / 100),
+    };
+    ctx.clearRect(0, 0, r.w, r.h);
+    drawBackdrop(ctx, r.w, r.h, backdrop);
+    if (shadowsOn) {
+      const intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
+      paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, shadow), r.w, r.h);
+    }
+    drawProduct(ctx, cutout, place);
+    return canvas;
+  };
+
+  // Render one of the 5 output styles at full resolution onto an offscreen
+  // canvas and download it.
+  const exportStyle = (id: OutputStyleId) => {
+    const cutout = cutoutRef.current;
+    if (!cutout) return;
+    const def = getStyle(id);
+    const r = getRatio(ratio);
+    const cv = document.createElement("canvas");
+    cv.width = r.w;
+    cv.height = r.h;
+    const ctx = cv.getContext("2d")!;
+    const base = autoPlacement(cutout, r.w, r.h);
+    const place: Placement = {
+      x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
+      y: (height / 100) * r.h,
+      scale: base.scale * (size / 100),
+    };
+    ctx.clearRect(0, 0, r.w, r.h);
+    drawBackdrop(ctx, r.w, r.h, def.backdrop);
+    if (def.shadows) {
+      const intensity = renderShadowIntensity(cutout, place, r.w, r.h, def.shadow);
+      paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, def.shadow), r.w, r.h);
+    }
+    drawProduct(ctx, cutout, place);
+    exportBanner(cv, `relight-${id}`);
+  };
+
+  const [exportingAll, setExportingAll] = useState(false);
+  const exportAllStyles = async () => {
+    if (exportingAll) return;
+    setExportingAll(true);
+    try {
+      // staggered so the browser doesn't block multiple downloads
+      for (const s of OUTPUT_STYLES) {
+        exportStyle(s.id);
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    } finally {
+      setExportingAll(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -754,29 +823,20 @@ export default function Studio() {
                         </Button>
                       )}
                       <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={exportingAll}
+                        onClick={() => void exportAllStyles()}
+                        title="Download one full-resolution PNG per output style"
+                      >
+                        <Layers className="size-4" />
+                        {exportingAll ? "Exporting…" : "All styles"}
+                      </Button>
+                      <Button
                         size="sm"
                         onClick={() => {
-                          const cutout = cutoutRef.current;
-                          const canvas = canvasRef.current;
-                          if (!cutout || !canvas) return;
-                          // re-render at full quality before export: JPEG preview
-                          // artifacts must not end up in the downloaded file
-                          const r = getRatio(ratio);
-                          const ctx = canvas.getContext("2d")!;
-                          const base = autoPlacement(cutout, r.w, r.h);
-                          const place: Placement = {
-                            x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
-                            y: (height / 100) * r.h,
-                            scale: base.scale * (size / 100),
-                          };
-                          ctx.clearRect(0, 0, r.w, r.h);
-                          drawBackdrop(ctx, r.w, r.h, backdrop);
-                          if (shadowsOn) {
-                            const intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
-                            paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, shadow), r.w, r.h);
-                          }
-                          drawProduct(ctx, cutout, place);
-                          exportBanner(canvas, "relight-banner");
+                          const canvas = renderFullQuality();
+                          if (canvas) exportBanner(canvas, "relight-banner");
                         }}
                       >
                         <Download className="size-4" />
@@ -803,7 +863,20 @@ export default function Studio() {
                     }}
                     onPointerUp={() => (dragRef.current = null)}
                     onPointerCancel={() => (dragRef.current = null)}
-                    title="Drag horizontally to reposition the product"
+                    role="application"
+                    aria-label="Product placement preview — drag horizontally or use arrow keys to reposition"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      const step = e.shiftKey ? 0.1 : 0.02;
+                      if (e.key === "ArrowLeft") {
+                        e.preventDefault();
+                        setOffsetX((v) => Math.max(-1, Math.round((v - step) * 100) / 100));
+                      } else if (e.key === "ArrowRight") {
+                        e.preventDefault();
+                        setOffsetX((v) => Math.min(1, Math.round((v + step) * 100) / 100));
+                      }
+                    }}
+                    title="Drag horizontally (or arrow keys) to reposition the product"
                   >
                     <BeforeAfterSlider before={beforeUrl} after={afterUrl} />
                   </div>
