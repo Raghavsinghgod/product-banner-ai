@@ -79,10 +79,11 @@ export function BeforeAfterSlider({
       )}
 
       {/* Handle */}
-      <div
-        className="absolute inset-y-0 z-10"
-        style={{ left: `calc(${pos}% - 1px)` }}
-      >
+        <div
+          data-compare-handle
+          className="absolute inset-y-0 z-10"
+          style={{ left: `calc(${pos}% - 1px)` }}
+        >
         <div className="h-full w-0.5 bg-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.25)]" />
         <div
           className="absolute top-1/2 left-1/2 flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-lg ring-1 ring-black/10"

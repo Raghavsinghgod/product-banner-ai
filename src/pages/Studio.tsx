@@ -250,12 +250,13 @@ export default function Studio() {
       clearTimeout(t);
       cancelAnimationFrame(raf);
     };
-  }, [stage, cutoutTick, backdrop, ratio, shadow, shadowsOn, size, height]);
+  }, [stage, cutoutTick, backdrop, ratio, shadow, shadowsOn, size, height, offsetX]);
 
   const reset = () => {
     cutoutRef.current = null;
     sourceRef.current = null;
     canvasRef.current = null;
+    shadowCacheRef.current = null;
     setStage("empty");
     setBeforeUrl(null);
     setAfterUrl(null);
@@ -775,11 +776,23 @@ export default function Studio() {
             {stage === "error" && (
               <Card className="flex flex-col items-center justify-center gap-3 rounded-2xl border-dashed p-16 text-center">
                 <AlertTriangle className="size-8 text-destructive/70" />
-                <p className="font-medium">We couldn’t isolate a product in that photo</p>
-                <p className="max-w-sm text-sm text-muted-foreground">
-                  Try the “Cutout sensitivity” slider, or a photo where the product stands
-                  apart from the background.
-                </p>
+                {fitWarning ? (
+                  <>
+                    <p className="font-medium">We kept the whole photo — no clear product stood out</p>
+                    <p className="max-w-sm text-sm text-muted-foreground">
+                      Raise the “Background tolerance” slider and retry, or use a photo
+                      where the product stands apart from the background.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-medium">We couldn’t isolate a product in that photo</p>
+                    <p className="max-w-sm text-sm text-muted-foreground">
+                      Try the “Cutout sensitivity” slider, or a photo where the product stands
+                      apart from the background.
+                    </p>
+                  </>
+                )}
                 <div className="mt-2 flex gap-2">
                   <Button variant="outline" size="sm" onClick={retrySegmentation}>
                     <RotateCcw className="size-4" />
@@ -848,6 +861,11 @@ export default function Studio() {
                     ref={previewBoxRef}
                     className="mx-auto max-w-[560px] cursor-grab touch-none select-none active:cursor-grabbing"
                     onPointerDown={(e) => {
+                      // Only start a placement drag on the image itself —
+                      // drags that begin on the compare handle belong to the
+                      // BeforeAfterSlider and must not move the product.
+                      const target = e.target as HTMLElement;
+                      if (target.closest("[data-compare-handle]")) return;
                       if (e.button !== 0) return;
                       dragRef.current = { startX: e.clientX, startOffset: offsetX };
                       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -886,7 +904,7 @@ export default function Studio() {
                 </Card>
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   {[
-                    { k: "Detected", v: (cutoutRef.current?.candidates.length ?? 1) + (cutoutRef.current?.candidates.length === 1 ? " object" : " objects") },
+                    { k: "Detected", v: (() => { const c = cutoutRef.current?.candidates.length ?? 1; return c + (c === 1 ? " object" : " objects"); })() },
                     { k: "Shadow", v: "Coverage integral" },
                     { k: "Output", v: getRatio(ratio).w + " × " + getRatio(ratio).h },
                     { k: "Privacy", v: "On-device" },

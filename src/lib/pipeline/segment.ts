@@ -598,7 +598,6 @@ function segmentPass(
   const alpha = new Uint8ClampedArray(n * 4);
   let softPixels = 0;
   const sd = signedDistance(filled, width, height);
-  const feather = Math.max(1, Math.round(softness));
 
   // Precompute background mean color for decontamination blending.
   let br = 0;
