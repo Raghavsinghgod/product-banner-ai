@@ -85,6 +85,7 @@ export function renderShadow(
   const longest = Math.max(box.w, box.h) * place.scale;
   const steps = Math.max(8, Math.round(38 * (0.5 + opts.length)));
   const travel = longest * opts.length;
+  if (travel > 0.5) {
   const heaved = new Uint8Array(n);
   const rng = mulberry32(0x9e3779b9);
   // deterministic jitter profile: sum of two sines + tiny noise
@@ -122,6 +123,7 @@ export function renderShadow(
       mask[i] = Math.max(mask[i], a);
     }
   }
+  } // end cast guard (travel > 0.5)
 
   // Gamma lift so shadow cores stay rich but edges fall off naturally
   for (let i = 0; i < n; i++) {
