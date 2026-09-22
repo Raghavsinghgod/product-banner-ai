@@ -25,6 +25,11 @@
 //
 //   Determinism: pure functions of the input; identical input -> identical
 //   output bytes.
+//
+// Shared primitives (blur, luminance, smoothstep, clamping) come from
+// ./pixels so every engine in the pipeline agrees on the exact same math.
+
+import { boxBlur3, clamp255, luminance, smoothstep } from "./pixels";
 
 export type UpscaleOptions = {
   /** Integer scale factor (2 or 3). */
@@ -107,37 +112,6 @@ function buildAxisPlan(srcSize: number, outSize: number, factor: number): AxisPl
   return { idx, w };
 }
 
-/** 3-iteration separable box blur ≈ Gaussian, O(1) per pixel. */
-function blur3(src: Float32Array, w: number, h: number, r: number): Float32Array {
-  let cur = src;
-  for (let pass = 0; pass < 3; pass++) cur = boxBlurOnce(cur, w, h, r);
-  return cur;
-}
-
-function boxBlurOnce(src: Float32Array, w: number, h: number, r: number): Float32Array {
-  const tmp = new Float32Array(src.length);
-  const out = new Float32Array(src.length);
-  const norm = 1 / (2 * r + 1);
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    let sum = 0;
-    for (let x = -r; x <= r; x++) sum += src[row + Math.min(w - 1, Math.max(0, x))];
-    for (let x = 0; x < w; x++) {
-      tmp[row + x] = sum * norm;
-      sum += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)];
-    }
-  }
-  for (let x = 0; x < w; x++) {
-    let sum = 0;
-    for (let y = -r; y <= r; y++) sum += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
-    for (let y = 0; y < h; y++) {
-      out[y * w + x] = sum * norm;
-      sum += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x];
-    }
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------- main
 
 /**
@@ -213,14 +187,14 @@ export function upscaleImage(
   // L is computed FROM the interpolated channels — never estimated separately.
   const L = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    L[i] = 0.299 * R[i] + 0.587 * G[i] + 0.114 * B[i];
+    L[i] = luminance(R[i], G[i], B[i]);
   }
 
   const sharpening = Math.max(0, Math.min(1, opts.sharpening ?? 0.55));
   const crispness = Math.max(0, Math.min(1, opts.crispness ?? 0.7));
 
-  const lo = blur3(L.slice(), W, H, Math.max(1, Math.round(f / 2)));
-  const hi = blur3(L.slice(), W, H, 1);
+  const lo = boxBlur3(L.slice(), W, H, Math.max(1, Math.round(f / 2)));
+  const hi = boxBlur3(L.slice(), W, H, 1);
 
   // local edge magnitude (gradient-based, on the interpolated luminance)
   const edgeMag = new Float32Array(n);
@@ -233,13 +207,12 @@ export function upscaleImage(
       edgeMag[i] = gx + gy;
     }
   }
-  const edgeSoft = blur3(edgeMag, W, H, Math.max(1, f));
+  const edgeSoft = boxBlur3(edgeMag, W, H, Math.max(1, f));
 
   for (let i = 0; i < n; i++) {
     const l = L[i];
     // halo suppressor: smoothstep fade of sharpening near strong edges
-    let sup = 1 - Math.min(1, edgeSoft[i] / 60);
-    sup = sup * sup * (3 - 2 * sup);
+    const sup = smoothstep(1 - Math.min(1, edgeSoft[i] / 60));
 
     let lNew = l + (l - lo[i]) * (sharpening * sup * 1.6);
 
@@ -251,11 +224,11 @@ export function upscaleImage(
     }
 
     // reconstruct with exact per-channel clamping; luminance ratio keeps hue
-    lNew = Math.max(0, Math.min(255, lNew));
+    lNew = clamp255(lNew);
     const ratio = l > 0.5 ? lNew / l : 1;
-    R[i] = Math.max(0, Math.min(255, l <= 0.5 ? lNew + (R[i] - l) : R[i] * ratio));
-    G[i] = Math.max(0, Math.min(255, l <= 0.5 ? lNew + (G[i] - l) : G[i] * ratio));
-    B[i] = Math.max(0, Math.min(255, l <= 0.5 ? lNew + (B[i] - l) : B[i] * ratio));
+    R[i] = clamp255(l <= 0.5 ? lNew + (R[i] - l) : R[i] * ratio);
+    G[i] = clamp255(l <= 0.5 ? lNew + (G[i] - l) : G[i] * ratio);
+    B[i] = clamp255(l <= 0.5 ? lNew + (B[i] - l) : B[i] * ratio);
   }
 
   // ---- stage 3: BT.601-exact chroma cleanup on semi-transparent edges ------
@@ -264,12 +237,12 @@ export function upscaleImage(
   const Cr = new Float32Array(n);
   const Cb = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const y2 = 0.299 * R[i] + 0.587 * G[i] + 0.114 * B[i];
+    const y2 = luminance(R[i], G[i], B[i]);
     Cr[i] = (R[i] - y2) * 0.713;
     Cb[i] = (B[i] - y2) * 0.564;
   }
-  const CrS = blur3(Cr, W, H, 1);
-  const CbS = blur3(Cb, W, H, 1);
+  const CrS = boxBlur3(Cr, W, H, 1);
+  const CbS = boxBlur3(Cb, W, H, 1);
 
   const out = new Uint8ClampedArray(n * 4);
   for (let i = 0; i < n; i++) {
@@ -277,7 +250,7 @@ export function upscaleImage(
     const a = A[i];
     if (a > 0 && a < 250) {
       // Y from the (already sharpened) channels
-      const y2 = 0.299 * R[i] + 0.587 * G[i] + 0.114 * B[i];
+      const y2 = luminance(R[i], G[i], B[i]);
       const cr = Cr[i] * 0.55 + CrS[i] * 0.45;
       const cb = Cb[i] * 0.55 + CbS[i] * 0.45;
       const r = y2 + 1.402 * cr;
