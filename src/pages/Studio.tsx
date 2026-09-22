@@ -99,6 +99,16 @@ export default function Studio() {
   const [cutoutTick, setCutoutTick] = useState(0);
 
   // ---- load a File -------------------------------------------------------
+
+  /**
+   * Entry point for user-uploaded photos.
+   *
+   * Validates the file is an image, flips the UI into the "processing"
+   * stage, then hands off to {@link ingestBitmap} which does the real work
+   * (decode → downscale → upscale → segmentation). Errors are caught and
+   * surfaced as the "error" stage rather than thrown — the studio should
+   * never crash on a bad file.
+   */
   const loadFile = useCallback(async (file: File) => {
     if (!file.type.startsWith("image/")) return;
     setStage("processing");
@@ -112,6 +122,23 @@ export default function Studio() {
     }
   }, []);
 
+  /**
+   * Decode pipeline: bitmap → normalized pixels → segmentation.
+   *
+   * Steps, in order:
+   *   1. Downscale so the longest side fits MAX_SIDE — keeps every later
+   *      stage (and the AI matting model) within a predictable memory
+   *      budget regardless of the phone camera's resolution.
+   *   2. Optional detail-preserving upscale (2x/3x). Soft phone crops gain
+   *      crisp edges and legible text BEFORE segmentation, so the cutout,
+   *      shadows and final banner all inherit the extra detail.
+   *   3. Build a model bitmap at the FINAL pixel size (upscale changes
+   *      dimensions, so the original bitmap can't be reused as-is).
+   *   4. Kick off {@link runSegment} on the normalized pixels.
+   *
+   * Failure of the upscale stage is non-fatal (logged, continues at
+   * native size); failure of segmentation is handled inside runSegment.
+   */
   const ingestBitmap = async (bitmap: ImageBitmap) => {
     const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
     let w = Math.max(1, Math.round(bitmap.width * scale));
@@ -243,6 +270,14 @@ export default function Studio() {
   };
 
   // ---- load the procedural sample ---------------------------------------
+
+  /**
+   * Loads the built-in demo photo (a procedurally generated "messy mug"
+   * shot) and runs the exact same pipeline as a real upload.
+   *
+   * This is the zero-friction path for judges/demo: one click shows the
+   * full before/after value without anyone needing a photo handy.
+   */
   const loadSample = useCallback(async () => {
     setStage("processing");
     setFileName("sample-mug.jpg");
@@ -469,9 +504,14 @@ export default function Studio() {
     exportBanner(cv, `relight-${id}`);
   };
 
+  // Batch export: renders and downloads every one of the 5 output styles at
+  // full quality, so a seller can pick the best look offline afterwards.
+  // Downloads are staggered 350 ms apart — browsers silently drop rapid
+  // successive downloads, and the stagger also keeps the main thread free
+  // enough for the progress UI to stay responsive.
   const [exportingAll, setExportingAll] = useState(false);
   const exportAllStyles = async () => {
-    if (exportingAll) return;
+    if (exportingAll) return; // guard against double-clicks
     setExportingAll(true);
     try {
       // staggered so the browser doesn't block multiple downloads
@@ -1199,6 +1239,13 @@ export default function Studio() {
 
 // ---------------------------------------------------------------- pieces
 
+/**
+ * Labeled slider with a live numeric readout.
+ *
+ * `onChange` fires on every drag tick (cheap re-tone-map path);
+ * `onCommit`, when provided, fires once on release (used for the expensive
+ * geometry-recompute path so dragging stays smooth).
+ */
 function SliderRow({
   label,
   value,
@@ -1238,6 +1285,7 @@ function SliderRow({
   );
 }
 
+/** Landing card shown before any photo is loaded: drop zone + sample button. */
 function EmptyState({ onBrowse, onSample }: { onBrowse: () => void; onSample: () => void }) {
   return (
     <Card className="flex flex-col items-center justify-center rounded-2xl border-dashed p-16 text-center">
@@ -1263,6 +1311,7 @@ function EmptyState({ onBrowse, onSample }: { onBrowse: () => void; onSample: ()
   );
 }
 
+/** Full-bleed "finding your product" card shown while the pipeline runs. */
 function ProcessingState() {
   return (
     <Card
