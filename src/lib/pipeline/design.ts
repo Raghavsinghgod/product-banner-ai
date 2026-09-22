@@ -15,6 +15,12 @@
 
 import type { StyleAnalysis } from "./styles";
 
+// Cache of grain tiles keyed by seed+grain — generating the tile costs a few
+// hundred fillRects on a small canvas, so reusing it across the ~dozens of
+// re-renders a slider drag triggers keeps the preview buttery.
+const grainTileCache = new Map<string, HTMLCanvasElement>();
+const GRAIN_TILE_SIZE = 96;
+
 export type GeneratedDesign = {
   seed: number;
   /** Base gradient stops (top, bottom) in css color strings. */
@@ -198,6 +204,8 @@ export function paintDesign(
   design: GeneratedDesign,
 ) {
   const { surface } = design;
+  // Guard: painting with a zero/negative extent throws in some browsers.
+  if (W <= 0 || H <= 0) return;
 
   // base gradient
   const g = ctx.createLinearGradient(0, 0, 0, H);
@@ -208,18 +216,21 @@ export function paintDesign(
 
   // soft geometric shapes behind the product
   for (const s of surface.shapes) {
+    // clamp defensively: rng-derived values should already be in range, but a
+    // hand-edited or corrupted design object must never throw mid-render
+    const alpha = Math.max(0, Math.min(1, s.alpha));
     ctx.save();
-    ctx.globalAlpha = s.alpha;
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = hsl(s.hue, 30, 60);
     if (s.kind === "circle") {
       ctx.beginPath();
-      ctx.arc(s.x * W, s.y * H, s.r * Math.min(W, H), 0, Math.PI * 2);
+      ctx.arc(s.x * W, s.y * H, Math.max(0, s.r) * Math.min(W, H), 0, Math.PI * 2);
       ctx.fill();
     } else if (s.kind === "arc") {
       ctx.beginPath();
       ctx.lineWidth = Math.min(W, H) * 0.02;
       ctx.strokeStyle = hsl(s.hue, 30, 60);
-      ctx.arc(s.x * W, s.y * H, s.r * Math.min(W, H), Math.PI * 1.1, Math.PI * 1.9);
+      ctx.arc(s.x * W, s.y * H, Math.max(0, s.r) * Math.min(W, H), Math.PI * 1.1, Math.PI * 1.9);
       ctx.stroke();
     } else {
       // band: wide diagonal stripe
@@ -270,28 +281,50 @@ export function paintDesign(
     ctx.fillRect(0, fy, W, H - fy);
   }
 
-  // vignette
+  // vignette (strength clamped — a value > 1 would parse as alpha 1 anyway,
+  // but keep the string contract explicit)
+  const vign = Math.max(0, Math.min(1, surface.vignette));
   const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.75);
   vg.addColorStop(0, "hsla(0, 0%, 0%, 0)");
-  vg.addColorStop(1, `hsla(0, 0%, 0%, ${surface.vignette.toFixed(2)})`);
+  vg.addColorStop(1, `hsla(0, 0%, 0%, ${vign.toFixed(2)})`);
   ctx.fillStyle = vg;
   ctx.fillRect(0, 0, W, H);
 
-  // paper grain (procedural, sparse — cheap and deterministic)
+  // paper grain (procedural, deterministic) — drawn as a tiny tiled pattern
+  // instead of ~5,000 individual fillRect calls: a 96x96 noise tile stamped
+  // once via createPattern covers the canvas with two fillRects total, which
+  // is ~2 orders of magnitude cheaper and identical-looking at preview scale.
   if (surface.grain > 0.01) {
-    const rng = makeRng(design.seed ^ 0x5f3759df);
-    const dots = Math.floor(W * H * 0.002);
-    ctx.fillStyle = `hsla(0, 0%, 0%, ${(surface.grain * 0.5).toFixed(3)})`;
-    for (let i = 0; i < dots; i++) {
-      const x = rng() * W;
-      const y = rng() * H;
-      ctx.fillRect(x, y, 1, 1);
+    const TILE = GRAIN_TILE_SIZE;
+    const key = `${design.seed}|${surface.grain.toFixed(3)}`;
+    let tile = grainTileCache.get(key);
+    if (!tile) {
+      // bounded cache: designs are one-off, so evict when it grows past a
+      // handful of entries (each tile is only 96x96 = ~37 KB of pixels)
+      if (grainTileCache.size > 8) grainTileCache.clear();
+      const rng = makeRng(design.seed ^ 0x5f3759df);
+      tile = document.createElement("canvas");
+      tile.width = TILE;
+      tile.height = TILE;
+      const tctx = tile.getContext("2d")!;
+      const dark = `hsla(0, 0%, 0%, ${(surface.grain * 0.5).toFixed(3)})`;
+      const light = `hsla(0, 0%, 100%, ${(surface.grain * 0.4).toFixed(3)})`;
+      // same dot density per unit area as the old per-pixel loop
+      const dots = Math.floor(TILE * TILE * 0.002);
+      tctx.fillStyle = dark;
+      for (let i = 0; i < dots; i++) {
+        tctx.fillRect(rng() * TILE, rng() * TILE, 1, 1);
+      }
+      tctx.fillStyle = light;
+      for (let i = 0; i < dots; i++) {
+        tctx.fillRect(rng() * TILE, rng() * TILE, 1, 1);
+      }
+      grainTileCache.set(key, tile);
     }
-    ctx.fillStyle = `hsla(0, 0%, 100%, ${(surface.grain * 0.4).toFixed(3)})`;
-    for (let i = 0; i < dots; i++) {
-      const x = rng() * W;
-      const y = rng() * H;
-      ctx.fillRect(x, y, 1, 1);
+    const pattern = ctx.createPattern(tile, "repeat");
+    if (pattern) {
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, W, H);
     }
   }
 }
