@@ -63,6 +63,17 @@ export function makeRng(seed: number): () => number {
   };
 }
 
+/**
+ * HSL color with explicit alpha, in the legacy comma-separated syntax
+ * canvas 2D accepts everywhere (`hsla(h, s%, l%, a)`).
+ * NOTE: the modern space-separated form `hsl(h s% l% / a)` is what `hsl()`
+ * above emits for opaque fills, but `addColorStop` chokes on mixing that
+ * syntax with a comma alpha — so gradients always use THIS helper.
+ */
+function hsla(h: number, s: number, l: number, a: number): string {
+  return `hsla(${Math.round(((h % 360) + 360) % 360)}, ${Math.round(s)}%, ${Math.round(l)}%, ${a})`;
+}
+
 function hsl(h: number, s: number, l: number): string {
   return `hsl(${Math.round(((h % 360) + 360) % 360)} ${Math.round(s)}% ${Math.round(l)}%)`;
 }
@@ -224,8 +235,14 @@ export function paintDesign(
   const lx = W * (0.5 + Math.cos(rad) * 0.28);
   const ly = H * (0.16 + Math.sin(rad) * 0.06);
   const pool = ctx.createRadialGradient(lx, ly, 0, lx, ly, Math.max(W, H) * 0.75);
-  pool.addColorStop(0, lightTint(design.light.temperature).replace("88%", "72%").replace("hsl", "hsla").replace(")", ", 0.34)"));
-  pool.addColorStop(1, "hsla(0 0% 50% / 0)");
+  // Warm/cool light tint, re-derived at reduced lightness + 0.34 alpha —
+  // computed directly (NOT by string surgery on lightTint's output, which
+  // produced invalid `hsla(210 40% 72%, 0.34)` and threw in addColorStop).
+  const t = Math.max(-1, Math.min(1, design.light.temperature));
+  const tintHue = t >= 0 ? 36 - t * 14 : 210 + Math.abs(t) * 16;
+  const tintSat = 40 + Math.abs(t) * 45;
+  pool.addColorStop(0, hsla(tintHue, tintSat, 72, 0.34));
+  pool.addColorStop(1, "hsla(0, 0%, 50%, 0)");
   ctx.fillStyle = pool;
   ctx.fillRect(0, 0, W, H);
 
@@ -233,11 +250,11 @@ export function paintDesign(
   if (surface.floor === "seam") {
     const fy = H * 0.72;
     const fg = ctx.createLinearGradient(0, fy, 0, H);
-    fg.addColorStop(0, "hsla(0 0% 50% / 0)");
-    fg.addColorStop(1, "hsla(0 0% 20% / 0.10)");
+    fg.addColorStop(0, "hsla(0, 0%, 50%, 0)");
+    fg.addColorStop(1, "hsla(0, 0%, 20%, 0.10)");
     ctx.fillStyle = fg;
     ctx.fillRect(0, fy, W, H - fy);
-    ctx.strokeStyle = "hsla(0 0% 30% / 0.10)";
+    ctx.strokeStyle = "hsla(0, 0%, 30%, 0.10)";
     ctx.lineWidth = Math.max(1, H * 0.002);
     ctx.beginPath();
     ctx.moveTo(0, fy);
@@ -246,17 +263,17 @@ export function paintDesign(
   } else if (surface.floor === "reflect") {
     const fy = H * 0.76;
     const rg = ctx.createLinearGradient(0, fy, 0, H);
-    rg.addColorStop(0, "hsla(0 0% 100% / 0.10)");
-    rg.addColorStop(0.5, "hsla(0 0% 100% / 0.02)");
-    rg.addColorStop(1, "hsla(0 0% 100% / 0)");
+    rg.addColorStop(0, "hsla(0, 0%, 100%, 0.10)");
+    rg.addColorStop(0.5, "hsla(0, 0%, 100%, 0.02)");
+    rg.addColorStop(1, "hsla(0, 0%, 100%, 0)");
     ctx.fillStyle = rg;
     ctx.fillRect(0, fy, W, H - fy);
   }
 
   // vignette
   const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.75);
-  vg.addColorStop(0, "hsla(0 0% 0% / 0)");
-  vg.addColorStop(1, `hsla(0 0% 0% / ${surface.vignette.toFixed(2)})`);
+  vg.addColorStop(0, "hsla(0, 0%, 0%, 0)");
+  vg.addColorStop(1, `hsla(0, 0%, 0%, ${surface.vignette.toFixed(2)})`);
   ctx.fillStyle = vg;
   ctx.fillRect(0, 0, W, H);
 
@@ -264,13 +281,13 @@ export function paintDesign(
   if (surface.grain > 0.01) {
     const rng = makeRng(design.seed ^ 0x5f3759df);
     const dots = Math.floor(W * H * 0.002);
-    ctx.fillStyle = `hsla(0 0% 0% / ${(surface.grain * 0.5).toFixed(3)})`;
+    ctx.fillStyle = `hsla(0, 0%, 0%, ${(surface.grain * 0.5).toFixed(3)})`;
     for (let i = 0; i < dots; i++) {
       const x = rng() * W;
       const y = rng() * H;
       ctx.fillRect(x, y, 1, 1);
     }
-    ctx.fillStyle = `hsla(0 0% 100% / ${(surface.grain * 0.4).toFixed(3)})`;
+    ctx.fillStyle = `hsla(0, 0%, 100%, ${(surface.grain * 0.4).toFixed(3)})`;
     for (let i = 0; i < dots; i++) {
       const x = rng() * W;
       const y = rng() * H;
