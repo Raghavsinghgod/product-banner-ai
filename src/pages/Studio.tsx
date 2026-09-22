@@ -21,7 +21,8 @@ import {
 import { getDemoBefore } from "@/lib/pipeline/demo";
 import { generateDesign, paintDesign, randomSeed, type GeneratedDesign } from "@/lib/pipeline/design";
 import { upscaleImage } from "@/lib/pipeline/upscale";
-import { aiMatte, matteToCutout, setMattingProgressListener } from "@/lib/pipeline/aiMatting";
+import { matteToCutout } from "@/lib/pipeline/aiMatting";
+import { aiMatteAsync, setMattingProgressListener, warmupMatting } from "@/lib/pipeline/aiMattingClient";
 import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
 import type { Cutout } from "@/lib/pipeline/segment";
@@ -102,10 +103,18 @@ export default function Studio() {
 
   // Mirror the model download progress into state so the loading chip can
   // show a real percentage instead of a spinner that spins for minutes.
+  // Warmup: start the model download as soon as the studio opens (in a
+  // worker, so the UI stays fully interactive while it streams). If it
+  // can't load, the chip flips to "failed" and uploads still work via the
+  // custom engine — nothing on the page ever blocks on the model.
   useEffect(() => {
     setMattingProgressListener((pct) => {
       if (pct === null) setAiProgress(null);
       else setAiProgress(pct);
+    });
+    setAiState((s) => (s === "unloaded" ? "loading" : s));
+    void warmupMatting().then((ok) => {
+      setAiState(ok ? "ready" : "failed");
     });
     return () => setMattingProgressListener(null);
   }, []);
@@ -228,7 +237,9 @@ export default function Studio() {
       // 1) AI matte (needs the bitmap at the same size as rgba)
       if (bitmap && !customOnly) {
         try {
-          const matte = await aiMatte(bitmap);
+          // aiMatteAsync runs in a worker; a watchdog bounds the wait so a
+          // stalled load/inference can never hang the UI (falls back below).
+          const matte = await aiMatteAsync(bitmap);
           if (matte) {
             cutout = matteToCutout(
               new ImageData(new Uint8ClampedArray(rgba), w, h),
@@ -560,11 +571,24 @@ export default function Studio() {
           {aiProgress !== null
             ? `— ${aiProgress}%${aiProgress >= 100 ? " (starting up…" : ""}`
             : "— first run downloads ~60 MB, then cached"}
+          <span className="text-muted-foreground">· runs in background, app stays usable</span>
         </div>
       )}
       {aiState === "failed" && (
-        <div className="fixed bottom-4 left-4 z-50 rounded-full border border-[#F4B23E]/40 bg-[#F4B23E]/10 px-4 py-2 text-xs font-medium text-[#7a5a14] shadow-lg">
+        <div className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-full border border-[#F4B23E]/40 bg-[#F4B23E]/10 px-4 py-2 text-xs font-medium text-[#7a5a14] shadow-lg">
           AI engine unavailable — using on-device color-model cutout
+          <button
+            onClick={() => {
+              // Retry the model load in the background; the custom engine
+              // keeps working meanwhile either way.
+              setAiState("loading");
+              setAiProgress(null);
+              void warmupMatting().then((ok) => setAiState(ok ? "ready" : "failed"));
+            }}
+            className="underline decoration-dotted underline-offset-2 hover:text-[#5c430d]"
+          >
+            retry
+          </button>
         </div>
       )}
       <p aria-live="polite" className="sr-only">
