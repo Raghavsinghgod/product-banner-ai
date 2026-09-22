@@ -21,6 +21,16 @@
 
 import type { Cutout } from "./segment";
 
+// ---------------------------------------------------------------- tuning
+// Hard deadlines so a stalled network can never wedge the studio. If the
+// model can't load within MODEL_LOAD_TIMEOUT_MS, or a single inference takes
+// longer than INFERENCE_TIMEOUT_MS, we give up for the session and the
+// caller falls back to the custom segment.ts engine — the app always works,
+// just without AI-grade matting.
+const MODEL_LOAD_TIMEOUT_MS = 60_000;
+const INFERENCE_TIMEOUT_MS = 45_000;
+const MODEL_ID = "onnx-community/BiRefNet_lite-ONNX";
+
 export type MattingResult = {
   /** Full-size RGBA where RGB = source pixels, A = model alpha (0..255). */
   alpha: Uint8ClampedArray;
@@ -37,23 +47,79 @@ type BackgroundRemovalPipeline = (
 
 let pipePromise: Promise<BackgroundRemovalPipeline | null> | null = null;
 
+// Set once the load/inference deadline is missed: every later call in this
+// session returns null immediately instead of retrying the same stalled
+// download. (A page reload resets it.)
+let permanentlyFailed = false;
+
+// Optional download-progress hook (percent 0..100, or null when the stage
+// can't be measured). The Studio page registers a listener to show "42%"
+// in the loading chip instead of a bare spinner.
+let progressListener: ((pct: number | null) => void) | null = null;
+
+/**
+ * Register a callback that receives model download progress.
+ * Pass null to unregister (called by Studio on unmount).
+ */
+export function setMattingProgressListener(
+  cb: ((pct: number | null) => void) | null,
+): void {
+  progressListener = cb;
+}
+
+/**
+ * Race `p` against a deadline. Resolves to null on EITHER outcome of losing
+ * the race: the deadline fires first, or `p` itself rejects. The losing
+ * promise's eventual rejection is swallowed so it can't surface as an
+ * unhandled error after the race has already settled.
+ */
+function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[aiMatting] ${label} exceeded ${ms / 1000}s — giving up.`);
+      resolve(null);
+    }, ms);
+  });
+  const safe = p.catch((err) => {
+    console.warn(`[aiMatting] ${label} failed.`, err);
+    return null as unknown as T;
+  });
+  return Promise.race([safe, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T | null>;
+}
+
 /**
  * Lazily load the BiRefNet background-removal pipeline.
- * Resolves to null if loading fails (caller falls back to the custom engine).
+ * Resolves to null if loading fails OR exceeds MODEL_LOAD_TIMEOUT_MS
+ * (caller falls back to the custom engine).
  */
 export function loadMattingModel(): Promise<BackgroundRemovalPipeline | null> {
+  if (permanentlyFailed) return Promise.resolve(null);
   if (!pipePromise) {
     pipePromise = (async () => {
-      try {
+      const load = (async () => {
         const { pipeline } = await import("@huggingface/transformers");
-        const pipe = await pipeline("background-removal", "onnx-community/BiRefNet_lite-ONNX", {
+        return pipeline("background-removal", MODEL_ID, {
           dtype: "fp32",
+          // Stream download percentages ("progress" events fire per file:
+          // config, weights, tokenizer — take the max as overall progress).
+          progress_callback: (info: { status?: string; progress?: number }) => {
+            if (info?.status === "progress" && typeof info.progress === "number") {
+              progressListener?.(Math.round(info.progress));
+            } else if (info?.status === "ready") {
+              progressListener?.(100);
+            }
+          },
         });
-        return pipe as unknown as BackgroundRemovalPipeline;
-      } catch (err) {
-        console.warn("BiRefNet model failed to load; using custom segmentation.", err);
-        return null;
+      })() as unknown as Promise<BackgroundRemovalPipeline>;
+      const result = await withDeadline(load, MODEL_LOAD_TIMEOUT_MS, "model load");
+      if (!result) {
+        permanentlyFailed = true;
+        progressListener?.(null);
       }
+      return result;
     })();
   }
   return pipePromise;
@@ -70,7 +136,8 @@ export async function aiMatte(
   if (!pipe) return null;
 
   try {
-    const result = await pipe(bitmap);
+    const result = await withDeadline(pipe(bitmap), INFERENCE_TIMEOUT_MS, "inference");
+    if (!result) return null;
     const first = result[0];
     if (!first?.mask) return null;
 

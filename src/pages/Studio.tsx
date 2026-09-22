@@ -21,7 +21,7 @@ import {
 import { getDemoBefore } from "@/lib/pipeline/demo";
 import { generateDesign, paintDesign, randomSeed, type GeneratedDesign } from "@/lib/pipeline/design";
 import { upscaleImage } from "@/lib/pipeline/upscale";
-import { aiMatte, matteToCutout } from "@/lib/pipeline/aiMatting";
+import { aiMatte, matteToCutout, setMattingProgressListener } from "@/lib/pipeline/aiMatting";
 import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
 import type { Cutout } from "@/lib/pipeline/segment";
@@ -87,6 +87,8 @@ export default function Studio() {
   const [designSeed, setDesignSeed] = useState<number | null>(null);
   /** AI matting model state (BiRefNet on-device). */
   const [aiState, setAiState] = useState<"unloaded" | "loading" | "ready" | "failed">("unloaded");
+  /** Model download progress percent (null = indeterminate, e.g. WASM warmup). */
+  const [aiProgress, setAiProgress] = useState<number | null>(null);
 
   const cutoutRef = useRef<Cutout | null>(null);
   const sourceRef = useRef<{ data: ImageData; width: number; height: number } | null>(null);
@@ -97,6 +99,16 @@ export default function Studio() {
   /** Reused preview-downscale canvas (avoids a new allocation per render tick). */
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [cutoutTick, setCutoutTick] = useState(0);
+
+  // Mirror the model download progress into state so the loading chip can
+  // show a real percentage instead of a spinner that spins for minutes.
+  useEffect(() => {
+    setMattingProgressListener((pct) => {
+      if (pct === null) setAiProgress(null);
+      else setAiProgress(pct);
+    });
+    return () => setMattingProgressListener(null);
+  }, []);
 
   // ---- load a File -------------------------------------------------------
 
@@ -223,11 +235,14 @@ export default function Studio() {
               matte,
             );
             setAiState("ready");
+            setAiProgress(100);
           } else {
             setAiState("failed");
+            setAiProgress(null);
           }
         } catch {
           setAiState("failed");
+          setAiProgress(null);
         }
       } else {
         setAiState("failed");
@@ -540,7 +555,11 @@ export default function Studio() {
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
             <span className="relative inline-flex size-2 rounded-full bg-primary" />
           </span>
-          Loading AI cutout engine (first run downloads ~60 MB, then cached)
+          Loading AI cutout engine
+          {" "}
+          {aiProgress !== null
+            ? `— ${aiProgress}%${aiProgress >= 100 ? " (starting up…" : ""}`
+            : "— first run downloads ~60 MB, then cached"}
         </div>
       )}
       {aiState === "failed" && (
